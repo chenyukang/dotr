@@ -41,28 +41,30 @@ impl Environment {
             if rel.as_os_str().is_empty() {
                 return "~".to_string();
             }
-            return format!("~/{}", rel.to_string_lossy());
+            return format!("~/{}", rel.to_string_lossy().replace('\\', "/"));
         }
 
-        path.to_string_lossy().into_owned()
+        path.to_string_lossy().replace('\\', "/")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn expands_home_paths() {
-        let env = Environment::new(PathBuf::from("/tmp/home")).unwrap();
+        let home = tempdir().unwrap();
+        let env = Environment::new(home.path().to_path_buf()).unwrap();
 
-        assert_eq!(env.expand_tilde("~"), PathBuf::from("/tmp/home"));
+        assert_eq!(env.expand_tilde("~"), home.path());
         assert_eq!(
             env.expand_tilde("~/projects/bin"),
-            PathBuf::from("/tmp/home/projects/bin")
+            home.path().join("projects/bin")
         );
         assert_eq!(
-            env.display_source(Path::new("/tmp/home/.config/nvim/init.lua")),
+            env.display_source(&home.path().join(".config/nvim/init.lua")),
             "~/.config/nvim/init.lua"
         );
     }

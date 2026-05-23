@@ -150,24 +150,32 @@ fn remove_age_suffix(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
-    fn env() -> Environment {
-        Environment::new(PathBuf::from("/Users/me")).unwrap()
+    fn env_for(home: &Path) -> Environment {
+        Environment::new(home.to_path_buf()).unwrap()
     }
 
     #[test]
     fn maps_home_paths_under_files_home() {
-        let mapped =
-            source_to_stored(Path::new("/Users/me/projects/bin/tool"), &env(), false).unwrap();
+        let home = tempdir().unwrap();
+        let source = home.path().join("projects/bin/tool");
+        let mapped = source_to_stored(&source, &env_for(home.path()), false).unwrap();
 
         assert_eq!(mapped.root, StoredRoot::Home);
         assert_eq!(mapped.as_index_path(), "files/home/projects/bin/tool");
     }
 
+    #[cfg(unix)]
     #[test]
     fn maps_absolute_paths_under_files_absolute() {
-        let mapped =
-            source_to_stored(Path::new("/Library/example/hello/world"), &env(), false).unwrap();
+        let home = tempdir().unwrap();
+        let mapped = source_to_stored(
+            Path::new("/Library/example/hello/world"),
+            &env_for(home.path()),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(mapped.root, StoredRoot::Absolute);
         assert_eq!(
@@ -178,7 +186,13 @@ mod tests {
 
     #[test]
     fn encrypted_paths_get_age_suffix() {
-        let mapped = source_to_stored(Path::new("/Users/me/.ssh/config"), &env(), true).unwrap();
+        let home = tempdir().unwrap();
+        let mapped = source_to_stored(
+            &home.path().join(".ssh/config"),
+            &env_for(home.path()),
+            true,
+        )
+        .unwrap();
 
         assert_eq!(mapped.as_index_path(), "files/home/.ssh/config.age");
     }
@@ -190,11 +204,18 @@ mod tests {
 
     #[test]
     fn maps_stored_paths_back_to_targets() {
+        let home = tempdir().unwrap();
         let (_, target) =
-            stored_index_to_target("files/home/.config/nvim/init.lua", &env()).unwrap();
-        assert_eq!(target, PathBuf::from("/Users/me/.config/nvim/init.lua"));
+            stored_index_to_target("files/home/.config/nvim/init.lua", &env_for(home.path()))
+                .unwrap();
+        assert_eq!(target, home.path().join(".config/nvim/init.lua"));
 
-        let (_, target) = stored_index_to_target("files/absolute/Library/example", &env()).unwrap();
-        assert_eq!(target, PathBuf::from("/Library/example"));
+        #[cfg(unix)]
+        {
+            let (_, target) =
+                stored_index_to_target("files/absolute/Library/example", &env_for(home.path()))
+                    .unwrap();
+            assert_eq!(target, PathBuf::from("/Library/example"));
+        }
     }
 }

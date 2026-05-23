@@ -292,6 +292,27 @@ mod tests {
         repo
     }
 
+    #[cfg(unix)]
+    fn write_home_file_command(relative: &str, contents: &str) -> String {
+        format!("printf %s {} > \"$HOME/{}\"", contents, relative)
+    }
+
+    #[cfg(windows)]
+    fn write_home_file_command(relative: &str, contents: &str) -> String {
+        let relative = relative.replace('/', "\\");
+        format!(">\"%HOME%\\{relative}\" echo {contents}")
+    }
+
+    #[cfg(unix)]
+    fn shell_written_contents(contents: &str) -> String {
+        contents.to_string()
+    }
+
+    #[cfg(windows)]
+    fn shell_written_contents(contents: &str) -> String {
+        format!("{contents}\r\n")
+    }
+
     #[test]
     fn dry_run_restore_does_not_write() {
         let home_dir = tempdir().unwrap();
@@ -412,7 +433,7 @@ mod tests {
         config.custom_backups.push(CustomBackupConfig {
             name: "generated".to_string(),
             backup_command: None,
-            restore_command: Some("printf restored > ~/.custom-restored".to_string()),
+            restore_command: Some(write_home_file_command(".custom-restored", "restored")),
             paths: vec![PathConfig {
                 src: "~/.config/generated/state.txt".to_string(),
                 include: Vec::new(),
@@ -456,7 +477,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(home.join(".custom-restored")).unwrap(),
-            "restored"
+            shell_written_contents("restored")
         );
         assert!(
             report
@@ -474,7 +495,7 @@ mod tests {
         config.custom_backups.push(CustomBackupConfig {
             name: "generated".to_string(),
             backup_command: None,
-            restore_command: Some("printf restored > ~/.custom-restored".to_string()),
+            restore_command: Some(write_home_file_command(".custom-restored", "restored")),
             paths: vec![PathConfig {
                 src: "~/.config/generated/state.txt".to_string(),
                 include: Vec::new(),
@@ -509,6 +530,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn absolute_restore_requires_explicit_flag() {
         let home_dir = tempdir().unwrap();

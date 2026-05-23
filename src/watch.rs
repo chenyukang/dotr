@@ -426,6 +426,10 @@ mod tests {
     use std::os::unix::fs as unix_fs;
     use tempfile::tempdir;
 
+    fn env_for(home: &Path) -> Environment {
+        Environment::new(home.to_path_buf()).unwrap()
+    }
+
     #[test]
     fn watches_directories_recursively_and_file_parents_non_recursively() {
         let temp = tempdir().unwrap();
@@ -510,8 +514,9 @@ mod tests {
 
     #[test]
     fn ignores_events_excluded_or_not_included_by_config() {
-        let env = Environment::new(PathBuf::from("/home/me")).unwrap();
-        let repo = PathBuf::from("/repo");
+        let home = tempdir().unwrap();
+        let repo = tempdir().unwrap();
+        let env = env_for(home.path());
         let rules = watch_rules_from_toml(
             r#"
             [[path]]
@@ -519,66 +524,68 @@ mod tests {
             include = ["AGENTS.md", "config.toml", "skills/**"]
             exclude = ["skills/.system/**"]
             "#,
-            &repo,
+            repo.path(),
             &env,
         );
 
         assert!(!should_ignore_event_path(
-            Path::new("/home/me/.codex/config.toml"),
-            &repo,
+            &home.path().join(".codex/config.toml"),
+            repo.path(),
             &rules
         ));
         assert!(!should_ignore_event_path(
-            Path::new("/home/me/.codex/skills/my-skill/SKILL.md"),
-            &repo,
+            &home.path().join(".codex/skills/my-skill/SKILL.md"),
+            repo.path(),
             &rules
         ));
         assert!(should_ignore_event_path(
-            Path::new("/home/me/.codex/logs_2.sqlite"),
-            &repo,
+            &home.path().join(".codex/logs_2.sqlite"),
+            repo.path(),
             &rules
         ));
         assert!(should_ignore_event_path(
-            Path::new("/home/me/.codex/sessions/abc.jsonl"),
-            &repo,
+            &home.path().join(".codex/sessions/abc.jsonl"),
+            repo.path(),
             &rules
         ));
         assert!(should_ignore_event_path(
-            Path::new("/home/me/.codex/skills/.system/openai/SKILL.md"),
-            &repo,
+            &home.path().join(".codex/skills/.system/openai/SKILL.md"),
+            repo.path(),
             &rules
         ));
         assert!(should_ignore_event_path(
-            Path::new("/home/me/.codex"),
-            &repo,
+            &home.path().join(".codex"),
+            repo.path(),
             &rules
         ));
     }
 
     #[test]
     fn directory_root_events_still_match_without_include_filter() {
-        let env = Environment::new(PathBuf::from("/home/me")).unwrap();
-        let repo = PathBuf::from("/repo");
+        let home = tempdir().unwrap();
+        let repo = tempdir().unwrap();
+        let env = env_for(home.path());
         let rules = watch_rules_from_toml(
             r#"
             [[path]]
             src = "~/.config/nvim"
             "#,
-            &repo,
+            repo.path(),
             &env,
         );
 
         assert!(!should_ignore_event_path(
-            Path::new("/home/me/.config/nvim"),
-            &repo,
+            &home.path().join(".config/nvim"),
+            repo.path(),
             &rules
         ));
     }
 
     #[test]
     fn custom_backup_paths_are_watch_sources() {
-        let env = Environment::new(PathBuf::from("/home/me")).unwrap();
-        let repo = PathBuf::from("/repo");
+        let home = tempdir().unwrap();
+        let repo = tempdir().unwrap();
+        let env = env_for(home.path());
         let rules = watch_rules_from_toml(
             r#"
             [[custom_backup]]
@@ -588,13 +595,13 @@ mod tests {
             [[custom_backup.path]]
             src = "~/.config/vscode/extensions.txt"
             "#,
-            &repo,
+            repo.path(),
             &env,
         );
 
         assert!(!should_ignore_event_path(
-            Path::new("/home/me/.config/vscode/extensions.txt"),
-            &repo,
+            &home.path().join(".config/vscode/extensions.txt"),
+            repo.path(),
             &rules
         ));
     }
@@ -666,26 +673,27 @@ mod tests {
 
     #[test]
     fn include_events_are_relative_not_recursive_basenames() {
-        let env = Environment::new(PathBuf::from("/home/me")).unwrap();
-        let repo = PathBuf::from("/repo");
+        let home = tempdir().unwrap();
+        let repo = tempdir().unwrap();
+        let env = env_for(home.path());
         let rules = watch_rules_from_toml(
             r#"
             [[path]]
             src = "~/.config/jj"
             include = ["config.toml"]
             "#,
-            &repo,
+            repo.path(),
             &env,
         );
 
         assert!(!should_ignore_event_path(
-            Path::new("/home/me/.config/jj/config.toml"),
-            &repo,
+            &home.path().join(".config/jj/config.toml"),
+            repo.path(),
             &rules
         ));
         assert!(should_ignore_event_path(
-            Path::new("/home/me/.config/jj/repos/repo-id/config.toml"),
-            &repo,
+            &home.path().join(".config/jj/repos/repo-id/config.toml"),
+            repo.path(),
             &rules
         ));
     }

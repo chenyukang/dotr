@@ -948,6 +948,39 @@ mod tests {
         repo
     }
 
+    #[cfg(unix)]
+    fn write_home_file_command(relative: &str, contents: &str) -> String {
+        let parent = Path::new(relative).parent().unwrap();
+        format!(
+            "mkdir -p \"$HOME/{}\" && printf %s {} > \"$HOME/{}\"",
+            parent.to_string_lossy(),
+            contents,
+            relative
+        )
+    }
+
+    #[cfg(windows)]
+    fn write_home_file_command(relative: &str, contents: &str) -> String {
+        let relative = relative.replace('/', "\\");
+        let parent = relative.rsplit_once('\\').map(|(parent, _)| parent);
+        match parent {
+            Some(parent) => format!(
+                "if not exist \"%HOME%\\{parent}\" mkdir \"%HOME%\\{parent}\" & >\"%HOME%\\{relative}\" echo {contents}"
+            ),
+            None => format!(">\"%HOME%\\{relative}\" echo {contents}"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn shell_written_contents(contents: &str) -> String {
+        contents.to_string()
+    }
+
+    #[cfg(windows)]
+    fn shell_written_contents(contents: &str) -> String {
+        format!("{contents}\r\n")
+    }
+
     #[test]
     fn backs_up_home_file_and_noops_on_second_run() {
         let home_dir = tempdir().unwrap();
@@ -1179,9 +1212,7 @@ mod tests {
         let mut config = Config::default();
         config.custom_backups.push(CustomBackupConfig {
             name: "one".to_string(),
-            backup_command: Some(
-                "mkdir -p ~/.config/one && printf one > ~/.config/one/state.txt".to_string(),
-            ),
+            backup_command: Some(write_home_file_command(".config/one/state.txt", "one")),
             restore_command: None,
             paths: vec![PathConfig {
                 src: "~/.config/one/state.txt".to_string(),
@@ -1195,9 +1226,7 @@ mod tests {
         });
         config.custom_backups.push(CustomBackupConfig {
             name: "two".to_string(),
-            backup_command: Some(
-                "mkdir -p ~/.config/two && printf two > ~/.config/two/state.txt".to_string(),
-            ),
+            backup_command: Some(write_home_file_command(".config/two/state.txt", "two")),
             restore_command: None,
             paths: vec![PathConfig {
                 src: "~/.config/two/state.txt".to_string(),
@@ -1239,7 +1268,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(repo.path().join("files/home/.config/one/state.txt")).unwrap(),
-            "one"
+            shell_written_contents("one")
         );
         assert!(!two_state.exists());
         assert!(
@@ -1411,10 +1440,10 @@ mod tests {
         let mut config = Config::default();
         config.custom_backups.push(CustomBackupConfig {
             name: "generated".to_string(),
-            backup_command: Some(
-                "mkdir -p ~/.config/generated && printf generated > ~/.config/generated/state.txt"
-                    .to_string(),
-            ),
+            backup_command: Some(write_home_file_command(
+                ".config/generated/state.txt",
+                "generated",
+            )),
             restore_command: None,
             paths: vec![PathConfig {
                 src: "~/.config/generated/state.txt".to_string(),
@@ -1449,7 +1478,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(repo.path().join("files/home/.config/generated/state.txt")).unwrap(),
-            "generated"
+            shell_written_contents("generated")
         );
     }
 
