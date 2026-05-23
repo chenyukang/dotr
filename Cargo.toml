@@ -1,7 +1,23 @@
 [package]
-name = "dotr"
+name = "dotr-cli"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "Rust-native backup tool for personal configuration files"
+license = "MIT"
+repository = "https://github.com/chenyukang/dotr"
+homepage = "https://chenyukang.github.io/dotr/"
+readme = "README.md"
+keywords = ["dotfiles", "backup", "cli", "git", "age"]
+categories = ["command-line-utilities", "config"]
+
+[lib]
+name = "dotr"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dotr"
+path = "src/main.rs"
 
 [dependencies]
 age = "0.11"

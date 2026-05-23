@@ -8,6 +8,14 @@ paths for changes.
 
 ## Install
 
+From crates.io:
+
+```sh
+cargo install dotr-cli
+```
+
+The published crate is `dotr-cli`, but the installed command is `dotr`.
+
 macOS or Linux:
 
 ```sh

@@ -66,7 +66,8 @@
               <span></span>
               <span></span>
             </div>
-            <pre><code><span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">init</span> <span class="sh-path">~/dotbackup</span> <span class="sh-flag">--with-defaults</span> <span class="sh-flag">--set-default</span>
+            <pre><code><span class="sh-prompt">$</span> <span class="sh-bin">cargo</span> <span class="sh-cmd">install</span> <span class="sh-path">dotr-cli</span>
+<span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">init</span> <span class="sh-path">~/dotbackup</span> <span class="sh-flag">--with-defaults</span> <span class="sh-flag">--set-default</span>
 <span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">add</span> <span class="sh-path">~/.zshrc</span>
 <span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">backup</span> <span class="sh-flag">--dry-run</span>
 <span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">backup</span> <span class="sh-flag">--commit</span> <span class="sh-flag">--push</span>
@@ -122,6 +123,10 @@
           <h2>The daily surface area stays small.</h2>
         </div>
         <div class="command-grid">
+          <div class="command-line">
+            <span class="prompt">$</span>
+            <code>cargo install dotr-cli</code>
+          </div>
           <div class="command-line">
             <span class="prompt">$</span>
             <code>dotr init ~/dotbackup --with-defaults --set-default</code>
