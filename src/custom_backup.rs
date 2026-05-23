@@ -86,7 +86,7 @@ fn custom_matches_targets(
         .map(|target| absolute_filter(repo_root, env, target))
         .collect::<Vec<_>>();
 
-    custom.paths.iter().any(|path| {
+    custom.path_configs().iter().any(|path| {
         let source = absolutize(&env.expand_tilde(&path.src), repo_root);
         filters.iter().any(|filter| paths_related(&source, filter))
     })
@@ -102,7 +102,7 @@ fn custom_matches_scopes(
         return true;
     }
 
-    custom.paths.iter().any(|path| {
+    custom.path_configs().iter().any(|path| {
         let source = absolutize(&env.expand_tilde(&path.src), repo_root);
         scopes.iter().any(|scope| paths_related(&source, scope))
     })

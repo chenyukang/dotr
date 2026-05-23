@@ -141,10 +141,20 @@ mod tests {
         assert!(!report.repo_root.join("backup").exists());
 
         let config = Config::load(&report.repo_root).unwrap();
-        assert!(config.paths.len() > 10);
+        assert!(config.path_configs().len() > 10);
         assert!(!config.custom_backups.is_empty());
-        assert!(config.paths.iter().any(|path| path.src == "~/.zshrc"));
-        assert!(config.paths.iter().any(|path| path.src == "~/.config/nvim"));
+        assert!(
+            config
+                .path_configs()
+                .iter()
+                .any(|path| path.src == "~/.zshrc")
+        );
+        assert!(
+            config
+                .path_configs()
+                .iter()
+                .any(|path| path.src == "~/.config/nvim")
+        );
         assert!(
             config
                 .custom_backups
@@ -164,6 +174,10 @@ mod tests {
         assert!(!toml.contains("follow_symlink = true"));
         assert!(!toml.contains("encrypt = false"));
         assert!(!toml.contains("include_binary_file = false"));
+        assert!(toml.contains("[[path_set]]"));
+        assert!(!toml.contains("[[path]]"));
+        assert!(toml.contains("backup = "));
+        assert!(toml.contains("restore = "));
     }
 
     #[test]

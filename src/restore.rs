@@ -420,6 +420,7 @@ mod tests {
                 include_binary_file: false,
                 encrypt: false,
             }],
+            ..CustomBackupConfig::default()
         });
         let repo = prepare_repo(home, &config);
         let env = Environment::new(home.to_path_buf()).unwrap();
@@ -481,6 +482,7 @@ mod tests {
                 include_binary_file: false,
                 encrypt: false,
             }],
+            ..CustomBackupConfig::default()
         });
         let repo = prepare_repo(home, &config);
         let env = Environment::new(home.to_path_buf()).unwrap();

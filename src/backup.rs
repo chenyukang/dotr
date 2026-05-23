@@ -94,7 +94,7 @@ fn run_with_config_and_progress(
     progress.phase("preparing rules");
     let default_excludes = default_exclude_set()?;
     let max_file_size = config.max_file_size_bytes()?;
-    let has_encrypted_paths = config.path_configs().any(|path_config| {
+    let has_encrypted_paths = config.path_configs().iter().any(|path_config| {
         let source = absolutize(&env.expand_tilde(&path_config.src), repo_root);
         scope.path_config_matches(&source) && path_config.encrypt
     });
@@ -150,7 +150,7 @@ fn run_with_config_and_progress(
                 &default_excludes,
                 &local_excludes,
                 local_includes.as_ref(),
-                path_config,
+                &path_config,
                 max_file_size,
                 recipients.as_deref(),
                 options.dry_run,
@@ -1188,6 +1188,7 @@ mod tests {
                 include_binary_file: false,
                 encrypt: false,
             }],
+            ..CustomBackupConfig::default()
         });
         config.custom_backups.push(CustomBackupConfig {
             name: "two".to_string(),
@@ -1203,6 +1204,7 @@ mod tests {
                 include_binary_file: false,
                 encrypt: false,
             }],
+            ..CustomBackupConfig::default()
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1419,6 +1421,7 @@ mod tests {
                 include_binary_file: false,
                 encrypt: false,
             }],
+            ..CustomBackupConfig::default()
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1466,6 +1469,7 @@ mod tests {
                 include_binary_file: false,
                 encrypt: false,
             }],
+            ..CustomBackupConfig::default()
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);

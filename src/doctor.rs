@@ -18,13 +18,15 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<DoctorReport> {
     let _ = default_exclude_set()?;
     let mut report = DoctorReport::default();
 
-    for path in &config.paths {
+    let mut top_level_paths = config.paths.clone();
+    top_level_paths.extend(config.path_sets.iter().flat_map(|set| set.expand()));
+    for path in &top_level_paths {
         check_path(path, env, true, &mut report)?;
     }
 
     for custom in &config.custom_backups {
         let warn_missing = custom.backup_command.is_none();
-        for path in &custom.paths {
+        for path in &custom.path_configs() {
             check_path(path, env, warn_missing, &mut report)?;
         }
     }

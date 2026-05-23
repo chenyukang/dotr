@@ -129,17 +129,14 @@ SSH, GPG, editor, prompt, terminal, Homebrew, and VS Code config paths. It must
 not include machine-specific personal paths.
 
 ```toml
-[[path]]
-src = "~/.zshrc"
-
-[[path]]
-src = "~/.gitconfig"
-
-[[path]]
-src = "~/.ssh/config"
-
-[[path]]
-src = "~/.config/nvim"
+[[path_set]]
+base = "~"
+items = [
+  ".zshrc",
+  ".gitconfig",
+  ".ssh/config",
+  ".config/nvim",
+]
 ```
 
 The full starter path set is:
@@ -219,40 +216,24 @@ Example:
 root = "/Users/yukang/code/dotfiles"
 store = "."
 
-[[path]]
-src = "~/.zshrc"
-
-[[path]]
-src = "~/.gitconfig"
-
-[[path]]
-src = "~/.ssh/config"
-
-[[path]]
-src = "~/.config/nvim"
-include = [
-  "init.lua",
-  "lua/**",
+[[path_set]]
+base = "~"
+items = [
+  ".zshrc",
+  ".gitconfig",
+  ".ssh/config",
+  { src = ".config/nvim", include = ["init.lua", "lua/**"] },
+  { src = ".config/some-app", include = ["config.toml", "assets/**"], include_binary_file = true },
 ]
-
-[[path]]
-src = "~/.config/some-app"
-include = [
-  "config.toml",
-  "assets/**",
-]
-include_binary_file = true
 
 [[path]]
 src = "/Library/example/hello/world"
 
 [[custom_backup]]
 name = "homebrew"
-backup_command = "if command -v brew >/dev/null 2>&1; then mkdir -p ~/.config/homebrew && brew bundle dump --file ~/.config/homebrew/Brewfile --force; else echo 'dotr: skipping homebrew backup; brew not found' >&2; fi"
-restore_command = "if command -v brew >/dev/null 2>&1 && [ -f ~/.config/homebrew/Brewfile ]; then brew bundle --file ~/.config/homebrew/Brewfile; else echo 'dotr: skipping homebrew restore; brew or Brewfile not found' >&2; fi"
-
-[[custom_backup.path]]
-src = "~/.config/homebrew/Brewfile"
+backup = "brew bundle dump --file ~/.config/homebrew/Brewfile --force"
+restore = "brew bundle --file ~/.config/homebrew/Brewfile"
+paths = ["~/.config/homebrew/Brewfile"]
 
 [watch]
 enabled = true
@@ -282,27 +263,30 @@ there is a concrete need.
 
 ## Include and exclude policy
 
-Each configured `[[path]]` may add local include/exclude rules:
+Each configured `[[path]]` or `path_set` item may add local include/exclude
+rules:
 
 ```toml
-[[path]]
-src = "~/.codex"
-include = [
-  "AGENTS.md",
-  "RTK.md",
-  "config.toml",
-  "rules/**",
-  "skills/**",
-]
-exclude = [
-  "skills/.system/**",
+[[path_set]]
+base = "~"
+items = [
+  { src = ".codex", include = [
+    "AGENTS.md",
+    "RTK.md",
+    "config.toml",
+    "rules/**",
+    "skills/**",
+  ], exclude = ["skills/.system/**"] },
 ]
 ```
 
-`include` patterns are relative to `src`. When `include` is present, only
-matching files are stored; directories are traversed but not stored as metadata
-entries. If `follow_symlink = false`, matching symlinks are stored as symlink
-metadata.
+`[[path_set]]` is shorthand for a group of `[[path]]` entries. String items are
+equivalent to `{ src = "..." }`; table items accept the same fields as
+`[[path]]`. Relative item `src` values are joined with `base`; `~` and absolute
+paths ignore `base`. `include` patterns are relative to `src`. When `include`
+is present, only matching files are stored; directories are traversed but not
+stored as metadata entries. If `follow_symlink = false`, matching symlinks are
+stored as symlink metadata.
 
 Binary files are skipped by default. A path can opt in with
 `include_binary_file = true` when binary assets are intentional. Include and
@@ -390,9 +374,9 @@ per-path allow rule in a later version. v0 does not need allow-rule overrides.
 Algorithm:
 
 1. Load `dotr.toml`.
-2. Run each configured `custom_backup.backup_command`, unless this is a dry run.
-3. Resolve configured source paths from both `[[path]]` and
-   `[[custom_backup.path]]`.
+2. Run each configured `custom_backup.backup`, unless this is a dry run.
+3. Resolve configured source paths from `[[path]]`, `[[path_set]]`, and custom
+   backup `paths`/`path_sets`.
 4. Walk files under each source path.
 5. Apply default and per-path excludes.
 6. Apply per-path includes.
@@ -420,20 +404,21 @@ sources, checks deletions, writes metadata, and runs optional Git steps.
 updates, custom backup commands, and Git actions without writing.
 
 `[[custom_backup]]` is for generated inventories such as Homebrew `Brewfile`
-and VS Code extension lists. It may define `backup_command`, `restore_command`,
-and nested `[[custom_backup.path]]` entries. The nested paths use the same
-schema as top-level `[[path]]`.
+and VS Code extension lists. It may define `backup`, `restore`, `paths`, and
+`path_sets`. The older `backup_command`, `restore_command`, and nested
+`[[custom_backup.path]]` form remain supported for existing configs.
 
 ## Add and remove behavior
 
 `dotr add PATH` resolves `PATH` relative to the current directory, writes a new
-`[[path]]` entry to `dotr.toml` if it is not already configured, and then runs
-one backup pass. Paths under `$HOME` are stored in config with `~`.
+`[[path]]` entry to `dotr.toml` if it is not already configured by either
+`[[path]]` or `[[path_set]]`, and then runs one backup pass. Paths under `$HOME`
+are stored in config with `~`.
 
-`dotr remove PATH` removes the matching configured `[[path]]` entry from
-`dotr.toml` and then runs one backup pass with deletion enabled, so entries that
-are no longer covered by config are removed from `files/` and
-`metadata/index.json`.
+`dotr remove PATH` removes the matching configured `[[path]]` entry or
+`[[path_set]]` item from `dotr.toml` and then runs one backup pass with deletion
+enabled, so entries that are no longer covered by config are removed from
+`files/` and `metadata/index.json`.
 
 ## Metadata
 
@@ -558,9 +543,10 @@ dotr restore --apply --allow-absolute /Library/example/hello/world
 ```
 
 After matching files are restored, `dotr restore --apply` runs matching
-`custom_backup.restore_command` entries. A custom restore command matches when
-no target filter is provided or when a target filter overlaps one of the
-custom backup paths. Dry-run restore prints the command without executing it.
+`custom_backup.restore` entries. A custom restore command matches when no target
+filter is provided or when a target filter overlaps one of the custom backup
+paths. Dry-run restore prints the command without executing it. The legacy
+`restore_command` key is still accepted.
 
 Absolute path restore follows the stricter path:
 

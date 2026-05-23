@@ -37,17 +37,14 @@ dotr init ~/dotbackup --with-defaults --set-default
 Edit `dotr.toml` and choose the paths you want to back up:
 
 ```toml
-[[path]]
-src = "~/.zshrc"
-
-[[path]]
-src = "~/.gitconfig"
-
-[[path]]
-src = "~/.ssh/config"
-
-[[path]]
-src = "~/.config/nvim"
+[[path_set]]
+base = "~"
+items = [
+  ".zshrc",
+  ".gitconfig",
+  ".ssh/config",
+  ".config/nvim",
+]
 ```
 
 Run a backup:
@@ -128,28 +125,13 @@ Absolute paths outside `$HOME` are stored under `files/absolute`:
 Example `dotr.toml`:
 
 ```toml
-[[path]]
-src = "~/.config/nvim"
-include = [
-  "init.lua",
-  "lua/**",
-  "after/**",
+[[path_set]]
+base = "~"
+items = [
+  ".gitconfig",
+  { src = ".config/nvim", include = ["init.lua", "lua/**", "after/**"] },
+  { src = ".config/some-app", include = ["config.toml", "assets/**"], include_binary_file = true },
 ]
-exclude = [
-  "**/swap/**",
-  "**/.netrwhist",
-]
-
-[[path]]
-src = "~/.config/some-app"
-include = [
-  "config.toml",
-  "assets/**",
-]
-include_binary_file = true
-
-[[path]]
-src = "~/.gitconfig"
 
 [[path]]
 src = "~/.config/some-app/token.json"
@@ -157,11 +139,9 @@ encrypt = true
 
 [[custom_backup]]
 name = "homebrew"
-backup_command = "if command -v brew >/dev/null 2>&1; then mkdir -p ~/.config/homebrew && brew bundle dump --file ~/.config/homebrew/Brewfile --force; else echo 'dotr: skipping homebrew backup; brew not found' >&2; fi"
-restore_command = "if command -v brew >/dev/null 2>&1 && [ -f ~/.config/homebrew/Brewfile ]; then brew bundle --file ~/.config/homebrew/Brewfile; else echo 'dotr: skipping homebrew restore; brew or Brewfile not found' >&2; fi"
-
-[[custom_backup.path]]
-src = "~/.config/homebrew/Brewfile"
+backup = "brew bundle dump --file ~/.config/homebrew/Brewfile --force"
+restore = "brew bundle --file ~/.config/homebrew/Brewfile"
+paths = ["~/.config/homebrew/Brewfile"]
 
 [watch]
 enabled = true
@@ -194,23 +174,25 @@ For application directories that mix durable config with state, prefer
 `include` over backing up the whole tree:
 
 ```toml
-[[path]]
-src = "~/.codex"
-include = [
-  "AGENTS.md",
-  "RTK.md",
-  "config.toml",
-  "rules/**",
-  "skills/**",
-]
-exclude = [
-  "skills/.system/**",
+[[path_set]]
+base = "~"
+items = [
+  { src = ".codex", include = [
+    "AGENTS.md",
+    "RTK.md",
+    "config.toml",
+    "rules/**",
+    "skills/**",
+  ], exclude = ["skills/.system/**"] },
 ]
 ```
 
-`include` patterns are relative to `src`. Directory entries are not stored when
-`include` is present; parent directories are recreated as needed during backup
-and restore.
+`[[path_set]]` is a compact form for many related paths. String items are
+equivalent to `{ src = "..." }`; table items accept the same fields as
+`[[path]]`. Relative `src` values are joined with `base`; `~` and absolute paths
+ignore `base`. `include` patterns are relative to `src`. Directory entries are
+not stored when `include` is present; parent directories are recreated as needed
+during backup and restore.
 
 Binary files are skipped by default. If a configured path intentionally needs
 binary assets, set `include_binary_file = true` on that `[[path]]`; include and
@@ -227,31 +209,39 @@ follow_symlink = false
 ```
 
 For generated inventories such as Homebrew packages or VS Code extensions, use
-`[[custom_backup]]`. During `dotr backup`, `backup_command` runs before the
-listed `custom_backup.path` entries are scanned. During `dotr restore --apply`,
-`restore_command` runs after matching files are restored. Dry runs print the
-commands without executing them.
+`[[custom_backup]]`. During `dotr backup`, `backup` runs before the listed
+custom paths are scanned. During `dotr restore --apply`, `restore` runs after
+matching files are restored. Dry runs print the commands without executing
+them. The older `backup_command`, `restore_command`, and
+`[[custom_backup.path]]` keys remain supported for existing configs.
 
 ```toml
 [[custom_backup]]
 name = "vscode"
-backup_command = "if command -v code >/dev/null 2>&1; then mkdir -p ~/.config/vscode && code --list-extensions > ~/.config/vscode/extensions.txt; else echo 'dotr: skipping VS Code extension backup; code not found' >&2; fi"
-restore_command = "if command -v code >/dev/null 2>&1 && [ -f ~/.config/vscode/extensions.txt ]; then xargs -n 1 code --install-extension < ~/.config/vscode/extensions.txt; else echo 'dotr: skipping VS Code extension restore; code or extensions.txt not found' >&2; fi"
-
-[[custom_backup.path]]
-src = "~/Library/Application Support/Code/User/settings.json"
-
-[[custom_backup.path]]
-src = "~/Library/Application Support/Code/User/keybindings.json"
-
-[[custom_backup.path]]
-src = "~/Library/Application Support/Code/User/tasks.json"
-
-[[custom_backup.path]]
-src = "~/Library/Application Support/Code/User/snippets"
-
-[[custom_backup.path]]
-src = "~/.config/vscode/extensions.txt"
+backup = '''
+if command -v code >/dev/null 2>&1; then
+  mkdir -p ~/.config/vscode
+  code --list-extensions > ~/.config/vscode/extensions.txt
+else
+  echo 'dotr: skipping VS Code extension backup; code not found' >&2
+fi
+'''
+restore = '''
+if command -v code >/dev/null 2>&1 && [ -f ~/.config/vscode/extensions.txt ]; then
+  xargs -n 1 code --install-extension < ~/.config/vscode/extensions.txt
+else
+  echo 'dotr: skipping VS Code extension restore; code or extensions.txt not found' >&2
+fi
+'''
+paths = ["~/.config/vscode/extensions.txt"]
+path_sets = [
+  { base = "~/Library/Application Support/Code/User", items = [
+    "settings.json",
+    "keybindings.json",
+    "tasks.json",
+    "snippets",
+  ] },
+]
 ```
 
 ## Commands
@@ -268,17 +258,14 @@ intentionally conservative: it does not include broad application state
 directories or machine-specific personal paths.
 
 ```toml
-[[path]]
-src = "~/.zshrc"
-
-[[path]]
-src = "~/.gitconfig"
-
-[[path]]
-src = "~/.ssh/config"
-
-[[path]]
-src = "~/.config/nvim"
+[[path_set]]
+base = "~"
+items = [
+  ".zshrc",
+  ".gitconfig",
+  ".ssh/config",
+  ".config/nvim",
+]
 ```
 
 The generated config contains more entries than the abbreviated example above.

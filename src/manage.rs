@@ -123,7 +123,7 @@ fn ensure_path_config(
     source: &Path,
 ) -> bool {
     if config
-        .paths
+        .path_configs()
         .iter()
         .any(|path| config_path_matches(path, repo_root, env, source))
     {
@@ -151,7 +151,13 @@ fn remove_path_config(
     config
         .paths
         .retain(|path| !config_path_matches(path, repo_root, env, source));
-    before != config.paths.len()
+    let removed_from_paths = before != config.paths.len();
+    let mut removed_from_sets = false;
+    for set in &mut config.path_sets {
+        removed_from_sets |= set.remove_matching(repo_root, env, source);
+    }
+    config.path_sets.retain(|set| !set.items.is_empty());
+    removed_from_paths || removed_from_sets
 }
 
 fn config_path_matches(
@@ -217,7 +223,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::{config::Config, init};
+    use crate::{
+        config::{Config, PathSetConfig, PathSetItem},
+        init,
+    };
 
     fn env_for(home: &Path) -> Environment {
         Environment::new(home.to_path_buf()).unwrap()
@@ -293,6 +302,39 @@ mod tests {
     }
 
     #[test]
+    fn add_existing_path_from_path_set_does_not_duplicate_config() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::write(home.join(".zshrc"), "zsh").unwrap();
+        let repo = prepare_repo();
+        let env = env_for(home);
+        let mut config = Config::load(repo.path()).unwrap();
+        config.path_sets.push(PathSetConfig {
+            base: Some("~".to_string()),
+            items: vec![PathSetItem::Src(".zshrc".to_string())],
+        });
+        config.write(repo.path()).unwrap();
+
+        let report = add(
+            repo.path(),
+            home,
+            &env,
+            &AddOptions {
+                path: PathBuf::from("~/.zshrc"),
+                no_git: true,
+                commit: false,
+                push: false,
+            },
+        )
+        .unwrap();
+
+        assert!(!report.config_changed);
+        let config = Config::load(repo.path()).unwrap();
+        assert!(config.paths.is_empty());
+        assert_eq!(config.path_sets[0].items.len(), 1);
+    }
+
+    #[test]
     fn remove_deletes_config_and_backup_files() {
         let home_dir = tempdir().unwrap();
         let home = home_dir.path();
@@ -331,6 +373,43 @@ mod tests {
         assert!(report.backup.deleted >= 1);
         assert!(!repo.path().join("files/home/.zshrc").exists());
         assert!(Config::load(repo.path()).unwrap().paths.is_empty());
+    }
+
+    #[test]
+    fn remove_deletes_path_set_item() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::write(home.join(".zshrc"), "zsh").unwrap();
+        fs::write(home.join(".gitconfig"), "git").unwrap();
+        let repo = prepare_repo();
+        let env = env_for(home);
+        let mut config = Config::load(repo.path()).unwrap();
+        config.path_sets.push(PathSetConfig {
+            base: Some("~".to_string()),
+            items: vec![
+                PathSetItem::Src(".zshrc".to_string()),
+                PathSetItem::Src(".gitconfig".to_string()),
+            ],
+        });
+        config.write(repo.path()).unwrap();
+
+        let report = remove(
+            repo.path(),
+            home,
+            &env,
+            &RemoveOptions {
+                path: PathBuf::from("~/.zshrc"),
+                no_git: true,
+                commit: false,
+                push: false,
+            },
+        )
+        .unwrap();
+
+        assert!(report.config_changed);
+        let config = Config::load(repo.path()).unwrap();
+        assert_eq!(config.path_sets[0].items.len(), 1);
+        assert_eq!(config.path_configs()[0].src, "~/.gitconfig");
     }
 
     #[test]
