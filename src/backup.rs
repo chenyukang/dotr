@@ -240,10 +240,9 @@ fn run_with_config_and_progress(
         };
         index.write(&index_file)?;
 
-        let should_commit = !options.no_git
-            && report.changed()
-            && (options.commit || config.git.auto_commit || options.push || config.git.auto_push);
-        if should_commit {
+        let wants_commit =
+            options.commit || config.git.auto_commit || options.push || config.git.auto_push;
+        if !options.no_git && wants_commit {
             let message = format!(
                 "{} ({})",
                 config.git.commit_message,
@@ -253,9 +252,8 @@ fn run_with_config_and_progress(
             git.commit_backup(repo_root, &message, config.git.include_unrelated)?;
         }
 
-        let should_push =
-            !options.no_git && report.changed() && (options.push || config.git.auto_push);
-        if should_push {
+        let wants_push = options.push || config.git.auto_push;
+        if !options.no_git && wants_push {
             progress.phase("pushing git changes");
             git.push(repo_root)?;
         }
@@ -283,11 +281,7 @@ fn is_included(
     }
 
     let rel = path.strip_prefix(source_root).unwrap_or(path);
-    include.is_match(path)
-        || include.is_match(rel)
-        || path
-            .file_name()
-            .is_some_and(|file_name| include.is_match(file_name))
+    include.is_match(path) || include.is_match(rel)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -415,11 +409,15 @@ fn process_entry(
 
     index_entry.sha256 =
         Some(sha256_file(source).with_context(|| format!("failed to hash {}", source.display()))?);
-    let unchanged =
-        previous_entry == Some(&index_entry) && store_dir.join(&stored.relative).exists();
+    let unchanged = previous_entry.is_some_and(|prev| {
+        file_entry_unchanged_ignoring_mtime(prev, &index_entry)
+            && store_dir.join(&stored.relative).exists()
+    });
 
     if unchanged {
         report.unchanged += 1;
+        current.insert(stored_key, previous_entry.cloned().expect("checked above"));
+        return Ok(());
     } else {
         if !dry_run {
             copy_file(source, &store_dir.join(&stored.relative))?;
@@ -605,6 +603,18 @@ fn record_change(
     }
 }
 
+fn file_entry_unchanged_ignoring_mtime(prev: &IndexEntry, next: &IndexEntry) -> bool {
+    prev.source == next.source
+        && prev.stored == next.stored
+        && prev.kind == next.kind
+        && prev.sha256 == next.sha256
+        && prev.mode == next.mode
+        && prev.executable == next.executable
+        && prev.encrypted == next.encrypted
+        && prev.symlink_target == next.symlink_target
+        && prev.size == next.size
+}
+
 fn kind_for_metadata(metadata: &fs::Metadata) -> EntryKind {
     let file_type = metadata.file_type();
     if file_type.is_symlink() {
@@ -686,6 +696,10 @@ fn remove_if_exists(path: &Path) -> Result<()> {
 }
 
 fn change_summary(report: &BackupReport) -> String {
+    if !report.changed() {
+        return "pending managed changes".to_string();
+    }
+
     format!(
         "{} add, {} update, {} delete",
         report.added, report.updated, report.deleted
@@ -694,7 +708,7 @@ fn change_summary(report: &BackupReport) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs as unix_fs;
+    use std::{cell::Cell, os::unix::fs as unix_fs, thread, time::Duration};
 
     use age::secrecy::ExposeSecret;
     use tempfile::tempdir;
@@ -708,6 +722,33 @@ mod tests {
     #[derive(Default)]
     struct RecordingProgress {
         events: Vec<String>,
+    }
+
+    #[derive(Default)]
+    struct RecordingGit {
+        commits: Cell<usize>,
+        pushes: Cell<usize>,
+    }
+
+    impl GitBackend for RecordingGit {
+        fn init(&self, _repo_root: &Path) -> Result<()> {
+            Ok(())
+        }
+
+        fn commit_backup(
+            &self,
+            _repo_root: &Path,
+            _message: &str,
+            _include_unrelated: bool,
+        ) -> Result<()> {
+            self.commits.set(self.commits.get() + 1);
+            Ok(())
+        }
+
+        fn push(&self, _repo_root: &Path) -> Result<()> {
+            self.pushes.set(self.pushes.get() + 1);
+            Ok(())
+        }
     }
 
     impl crate::progress::BackupProgress for RecordingProgress {
@@ -796,6 +837,95 @@ mod tests {
         )
         .unwrap();
         assert_eq!(second.added + second.updated + second.deleted, 0);
+    }
+
+    #[test]
+    fn plaintext_same_content_rewrite_preserves_index() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join(".config/app")).unwrap();
+        let source = home.join(".config/app/config.toml");
+        fs::write(&source, "theme = 'light'\n").unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: "~/.config/app/config.toml".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            encrypt: false,
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+        let options = BackupOptions {
+            no_git: true,
+            ..BackupOptions::default()
+        };
+
+        let first = run_with_config(repo.path(), &env, &config, &options, &CommandGit).unwrap();
+        assert_eq!(first.added, 1);
+        let before = fs::read_to_string(repo.path().join("metadata/index.json")).unwrap();
+
+        thread::sleep(Duration::from_millis(10));
+        fs::write(&source, "theme = 'light'\n").unwrap();
+
+        let second = run_with_config(repo.path(), &env, &config, &options, &CommandGit).unwrap();
+        let after = fs::read_to_string(repo.path().join("metadata/index.json")).unwrap();
+
+        assert_eq!(second.added + second.updated + second.deleted, 0);
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn plaintext_file_comparison_ignores_mtime_only() {
+        let previous = IndexEntry {
+            source: "~/.config/app/config.toml".to_string(),
+            stored: "files/home/.config/app/config.toml".to_string(),
+            kind: EntryKind::File,
+            sha256: Some("abc".to_string()),
+            mode: Some(0o644),
+            executable: false,
+            encrypted: false,
+            symlink_target: None,
+            size: Some(10),
+            modified_unix_nanos: Some(1),
+        };
+        let mut next = previous.clone();
+        next.modified_unix_nanos = Some(2);
+
+        assert!(file_entry_unchanged_ignoring_mtime(&previous, &next));
+
+        next.mode = Some(0o755);
+        next.executable = true;
+        assert!(!file_entry_unchanged_ignoring_mtime(&previous, &next));
+    }
+
+    #[test]
+    fn explicit_commit_and_push_run_even_without_new_file_changes() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        let config = Config::default();
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+        let git = RecordingGit::default();
+
+        let report = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                commit: true,
+                push: true,
+                ..BackupOptions::default()
+            },
+            &git,
+        )
+        .unwrap();
+
+        assert_eq!(report.added + report.updated + report.deleted, 0);
+        assert_eq!(git.commits.get(), 1);
+        assert_eq!(git.pushes.get(), 1);
     }
 
     #[test]
@@ -1044,6 +1174,51 @@ mod tests {
             !repo
                 .path()
                 .join("files/home/.codex/cache/item.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn include_rules_are_relative_not_recursive_basenames() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join(".config/jj/repos/repo-id")).unwrap();
+        fs::write(home.join(".config/jj/config.toml"), "root").unwrap();
+        fs::write(home.join(".config/jj/repos/repo-id/config.toml"), "nested").unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: "~/.config/jj".to_string(),
+            include: vec!["config.toml".to_string()],
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            encrypt: false,
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+
+        run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &CommandGit,
+        )
+        .unwrap();
+
+        assert!(
+            repo.path()
+                .join("files/home/.config/jj/config.toml")
+                .exists()
+        );
+        assert!(
+            !repo
+                .path()
+                .join("files/home/.config/jj/repos/repo-id/config.toml")
                 .exists()
         );
     }

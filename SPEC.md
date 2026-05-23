@@ -407,8 +407,11 @@ Algorithm:
 13. Write `metadata/index.json`.
 14. If files changed and Git auto-commit is enabled, commit and optionally push.
 
-Comparison uses content hashing, not only mtime. Metadata-only changes are still
-recorded in `index.json` and should count as changes.
+Comparison uses content hashing, not only mtime. For unencrypted files,
+mtime-only rewrites with identical content preserve the previous `index.json`
+entry and should not count as changes. Durable metadata changes such as mode or
+executable-bit changes are still recorded. Encrypted files use size and mtime as
+the conservative change signal because plaintext hashes are not stored.
 
 `dotr backup` prints progress updates to stderr while it scans configured
 sources, checks deletions, writes metadata, and runs optional Git steps.

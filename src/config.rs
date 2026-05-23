@@ -34,7 +34,6 @@ pub const STARTER_PATHS: &[&str] = &[
     "~/.config/nvim",
     "~/.config/helix",
     "~/.config/starship.toml",
-    "~/.config/alacritty",
     "~/.config/ghostty",
     "~/.config/kitty",
     "~/.config/wezterm",
@@ -326,6 +325,7 @@ pub fn starter_paths() -> Vec<PathConfig> {
         .collect::<Vec<_>>();
 
     paths.extend([
+        path_config_with_includes("~/.config/alacritty", &["alacritty.toml"]),
         path_config_with_includes("~/.config/atuin", &["config.toml"]),
         path_config_with_includes("~/.config/fastfetch", &["config.jsonc"]),
         path_config_with_includes("~/.config/fresh", &["config.json"]),
@@ -597,6 +597,7 @@ mod tests {
         assert!(sources.contains(&"~/.config/nvim"));
         assert!(sources.contains(&"~/.zpreztorc"));
         assert!(sources.contains(&"~/.config/atuin"));
+        assert!(sources.contains(&"~/.config/alacritty"));
         assert!(sources.contains(&"~/.config/gh"));
         assert!(sources.contains(&"~/.config/yazi"));
         assert!(sources.contains(&"~/.config/zed"));
@@ -604,6 +605,15 @@ mod tests {
         assert!(!sources.contains(&"~/.custom-personal-tool"));
         assert!(config.paths.iter().all(|path| path.follow_symlink));
         assert!(config.paths.iter().all(|path| !path.include_binary_file));
+        assert_eq!(
+            config
+                .paths
+                .iter()
+                .find(|path| path.src == "~/.config/alacritty")
+                .unwrap()
+                .include,
+            vec!["alacritty.toml"]
+        );
         assert_eq!(
             config
                 .paths

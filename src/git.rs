@@ -68,10 +68,11 @@ pub fn has_managed_changes(repo_root: &Path) -> Result<bool> {
 }
 
 pub fn has_unrelated_changes(repo_root: &Path) -> Result<bool> {
-    let output = git_output(repo_root, ["status", "--porcelain"])?;
+    let output = git_output(repo_root, ["status", "--porcelain", "-z"])?;
     Ok(output
-        .lines()
-        .any(|line| !is_managed_status_path(line.get(3..).unwrap_or(""))))
+        .split('\0')
+        .filter_map(status_path)
+        .any(|path| !is_managed_status_path(path)))
 }
 
 fn add_managed_paths(repo_root: &Path) -> Result<()> {
@@ -96,6 +97,14 @@ fn is_managed_status_path(path: &str) -> bool {
         || path == ".gitignore"
         || path.starts_with("files/")
         || path.starts_with("metadata/")
+}
+
+fn status_path(record: &str) -> Option<&str> {
+    if record.len() < 4 || record.as_bytes().get(2) != Some(&b' ') {
+        return None;
+    }
+
+    record.get(3..)
 }
 
 fn run_git<const N: usize>(repo_root: &Path, args: [&str; N]) -> Result<()> {
@@ -143,5 +152,25 @@ mod tests {
         assert!(!is_managed_status_path("README.md"));
         assert!(!is_managed_status_path("src/main.rs"));
         assert!(!is_managed_status_path("backup/dotr.toml"));
+    }
+
+    #[test]
+    fn parses_porcelain_z_paths_with_spaces_without_quotes() {
+        let output =
+            "A  files/home/Library/Application Support/Code/User/settings.json\0 M README.md\0";
+        let paths = output
+            .split('\0')
+            .filter_map(status_path)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            paths,
+            vec![
+                "files/home/Library/Application Support/Code/User/settings.json",
+                "README.md"
+            ]
+        );
+        assert!(is_managed_status_path(paths[0]));
+        assert!(!is_managed_status_path(paths[1]));
     }
 }

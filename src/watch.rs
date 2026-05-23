@@ -272,11 +272,7 @@ fn is_included_event(path: &Path, source_root: &Path, include: Option<&GlobSet>)
     }
 
     let rel = path.strip_prefix(source_root).unwrap_or(path);
-    include.is_match(path)
-        || include.is_match(rel)
-        || path
-            .file_name()
-            .is_some_and(|file_name| include.is_match(file_name))
+    include.is_match(path) || include.is_match(rel)
 }
 
 fn push_unique_watch_spec(specs: &mut Vec<WatchSpec>, spec: WatchSpec) {
@@ -468,6 +464,32 @@ mod tests {
 
         assert!(!should_ignore_event_path(
             Path::new("/home/me/.config/vscode/extensions.txt"),
+            &repo,
+            &rules
+        ));
+    }
+
+    #[test]
+    fn include_events_are_relative_not_recursive_basenames() {
+        let env = Environment::new(PathBuf::from("/home/me")).unwrap();
+        let repo = PathBuf::from("/repo");
+        let rules = watch_rules_from_toml(
+            r#"
+            [[path]]
+            src = "~/.config/jj"
+            include = ["config.toml"]
+            "#,
+            &repo,
+            &env,
+        );
+
+        assert!(!should_ignore_event_path(
+            Path::new("/home/me/.config/jj/config.toml"),
+            &repo,
+            &rules
+        ));
+        assert!(should_ignore_event_path(
+            Path::new("/home/me/.config/jj/repos/repo-id/config.toml"),
             &repo,
             &rules
         ));
