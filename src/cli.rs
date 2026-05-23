@@ -145,6 +145,8 @@ enum DaemonCommands {
     Start,
     #[command(about = "Stop the background watcher")]
     Stop,
+    #[command(about = "Stop and start the background watcher")]
+    Restart,
     #[command(about = "Show whether the background watcher is configured and running")]
     Status,
 }
@@ -202,6 +204,7 @@ pub fn run_from(cli: Cli) -> Result<()> {
                     no_git,
                     commit,
                     push,
+                    ..BackupOptions::default()
                 },
                 &mut progress,
             )?;
@@ -331,20 +334,26 @@ pub fn run_from(cli: Cli) -> Result<()> {
             }
             DaemonCommands::Stop => {
                 let report = daemon::stop(&env)?;
-                if report.stopped {
+                print_daemon_stop_report(&report);
+            }
+            DaemonCommands::Restart => {
+                let stop_report = daemon::stop(&env)?;
+                print_daemon_stop_report(&stop_report);
+
+                let repo_root = resolve_daemon_start_repo(repo.as_deref(), &cwd, &env)?;
+                let start_report = daemon::start(&env, repo_root.as_deref())?;
+                if start_report.already_running {
                     println!(
-                        "stopped daemon {} with pid {}",
-                        report.name,
-                        report.pid.unwrap_or_default()
-                    );
-                } else if let Some(pid) = report.pid {
-                    println!(
-                        "daemon {} was not running; removed stale pid {pid}",
-                        report.name
+                        "daemon {} already running with pid {}",
+                        start_report.name, start_report.pid
                     );
                 } else {
-                    println!("daemon {} was not running", report.name);
+                    println!(
+                        "started daemon {} with pid {}",
+                        start_report.name, start_report.pid
+                    );
                 }
+                println!("log: {}", start_report.log_path.display());
             }
             DaemonCommands::Status => {
                 let status = daemon::status(&env)?;
@@ -402,6 +411,23 @@ fn daemon_status_label(state: daemon::DaemonState) -> &'static str {
         daemon::DaemonState::Running => "running",
         daemon::DaemonState::Stopped => "configured but stopped",
         daemon::DaemonState::StalePid => "configured with stale pid",
+    }
+}
+
+fn print_daemon_stop_report(report: &daemon::StopReport) {
+    if report.stopped {
+        println!(
+            "stopped daemon {} with pid {}",
+            report.name,
+            report.pid.unwrap_or_default()
+        );
+    } else if let Some(pid) = report.pid {
+        println!(
+            "daemon {} was not running; removed stale pid {pid}",
+            report.name
+        );
+    } else {
+        println!("daemon {} was not running", report.name);
     }
 }
 

@@ -605,6 +605,7 @@ Commands:
 ```text
 dotr daemon start
 dotr daemon stop
+dotr daemon restart
 dotr daemon status
 ```
 
@@ -615,13 +616,21 @@ Behavior:
   the background.
 - `start` reads `[daemon].log_path` and `[daemon].log_level` from `dotr.toml`;
   omitted values default to `~/.local/state/dotr/dotr-watch.log` and `info`.
+- Watch-triggered backups are scoped to changed paths after debounce. Scope
+  outside `metadata/index.json` entries are preserved, scoped deletions only
+  remove entries under the changed path, and only matching custom backup
+  commands run.
 - `stop` reads the pid file and sends `SIGTERM`.
+- `restart` runs `stop`, then uses the same repository resolution and config
+  refresh behavior as `start`.
 - `status` reports whether the daemon config exists and whether the recorded
   pid is running.
 - v0 does not write systemd units, launchd plists, or other OS-specific service
   files.
 
-Daemon logs are JSON Lines. `~` in daemon log paths expands to the user's home
+Daemon logs are timestamp-prefixed structured lines. Each structured dotr log
+entry starts with an ISO 8601 timestamp in the system time zone, followed by a
+tab and a JSON payload. `~` in daemon log paths expands to the user's home
 directory. Relative daemon log paths resolve from the dotr repository root.
 `log_level` supports `error`, `warn`, `info`, `debug`, and `trace`. stdout and
 stderr both append to the same `log_path`.
@@ -671,6 +680,7 @@ dotr restore [--dry-run] [--apply] [--force] [--allow-absolute] [PATH...]
 dotr watch
 dotr daemon start
 dotr daemon stop
+dotr daemon restart
 dotr daemon status
 dotr doctor
 dotr repo

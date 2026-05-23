@@ -1,5 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::Local;
 use serde_json::{Map, Value, json};
 
 pub fn info(event: &str, fields: &[(&str, Value)]) {
@@ -23,8 +24,13 @@ fn write(level: Level, event: &str, fields: &[(&str, Value)]) {
         return;
     }
 
+    let payload = log_payload(level, event, fields, unix_timestamp_ms());
+    eprintln!("{}", format_log_line(&local_timestamp(), &payload));
+}
+
+fn log_payload(level: Level, event: &str, fields: &[(&str, Value)], ts_unix_ms: u128) -> Value {
     let mut object = Map::new();
-    object.insert("ts_unix_ms".to_string(), json!(unix_timestamp_ms()));
+    object.insert("ts_unix_ms".to_string(), json!(ts_unix_ms));
     object.insert("level".to_string(), json!(level.as_str()));
     object.insert("target".to_string(), json!("dotr"));
     object.insert("event".to_string(), json!(event));
@@ -33,7 +39,7 @@ fn write(level: Level, event: &str, fields: &[(&str, Value)]) {
         object.insert((*key).to_string(), value.clone());
     }
 
-    eprintln!("{}", Value::Object(object));
+    Value::Object(object)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -86,6 +92,14 @@ fn unix_timestamp_ms() -> u128 {
         .unwrap_or_default()
 }
 
+fn local_timestamp() -> String {
+    Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string()
+}
+
+fn format_log_line(timestamp: &str, payload: &Value) -> String {
+    format!("{timestamp}\t{payload}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,6 +107,36 @@ mod tests {
     #[test]
     fn timestamp_is_non_zero() {
         assert!(unix_timestamp_ms() > 0);
+    }
+
+    #[test]
+    fn local_timestamp_is_first_log_column() {
+        let line = format_log_line("2026-05-23T15:30:01.123+08:00", &json!({"event": "test"}));
+
+        assert_eq!(line, "2026-05-23T15:30:01.123+08:00\t{\"event\":\"test\"}");
+    }
+
+    #[test]
+    fn payload_fields_keep_semantic_order() {
+        let payload = log_payload(
+            Level::Info,
+            "backup_completed",
+            &[
+                ("added", json!(0)),
+                ("updated", json!(1)),
+                ("deleted", json!(0)),
+                ("unchanged", json!(2)),
+                ("skipped", json!(3)),
+                ("visited", json!(4)),
+                ("cost", json!("43 ms")),
+            ],
+            123,
+        );
+
+        assert_eq!(
+            payload.to_string(),
+            "{\"ts_unix_ms\":123,\"level\":\"info\",\"target\":\"dotr\",\"event\":\"backup_completed\",\"added\":0,\"updated\":1,\"deleted\":0,\"unchanged\":2,\"skipped\":3,\"visited\":4,\"cost\":\"43 ms\"}"
+        );
     }
 
     #[test]

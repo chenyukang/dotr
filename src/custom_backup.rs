@@ -17,6 +17,7 @@ pub fn run_backup_commands(
     repo_root: &Path,
     env: &Environment,
     dry_run: bool,
+    scopes: &[PathBuf],
     actions: &mut Vec<String>,
     progress: &mut impl BackupProgress,
 ) -> Result<()> {
@@ -24,6 +25,9 @@ pub fn run_backup_commands(
         let Some(command) = custom.backup_command.as_deref() else {
             continue;
         };
+        if !custom_matches_scopes(custom, repo_root, env, scopes) {
+            continue;
+        }
         let action = format!("custom backup {}: {command}", custom.name);
         if dry_run {
             actions.push(format!("would run {action}"));
@@ -84,10 +88,28 @@ fn custom_matches_targets(
 
     custom.paths.iter().any(|path| {
         let source = absolutize(&env.expand_tilde(&path.src), repo_root);
-        filters
-            .iter()
-            .any(|filter| source.starts_with(filter) || filter.starts_with(&source))
+        filters.iter().any(|filter| paths_related(&source, filter))
     })
+}
+
+fn custom_matches_scopes(
+    custom: &CustomBackupConfig,
+    repo_root: &Path,
+    env: &Environment,
+    scopes: &[PathBuf],
+) -> bool {
+    if scopes.is_empty() {
+        return true;
+    }
+
+    custom.paths.iter().any(|path| {
+        let source = absolutize(&env.expand_tilde(&path.src), repo_root);
+        scopes.iter().any(|scope| paths_related(&source, scope))
+    })
+}
+
+fn paths_related(left: &Path, right: &Path) -> bool {
+    left.starts_with(right) || right.starts_with(left)
 }
 
 fn absolute_filter(repo_root: &Path, env: &Environment, raw: &str) -> PathBuf {

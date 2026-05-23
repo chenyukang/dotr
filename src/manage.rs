@@ -181,6 +181,7 @@ fn run_backup(
             no_git,
             commit,
             push,
+            ..BackupOptions::default()
         },
         progress,
     )

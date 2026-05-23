@@ -396,6 +396,7 @@ Start and control the background watcher:
 dotr daemon start
 dotr daemon status
 dotr daemon stop
+dotr daemon restart
 ```
 
 `dotr daemon start` resolves the repository, writes a user-level daemon config
@@ -403,6 +404,11 @@ that points at the resolved repository and the current `dotr` executable, then
 launches `dotr --repo <repo> watch` in the background. It does not install a
 systemd unit, launchd plist, or any OS-specific service file. The daemon records
 a pid file under `~/.local/state/dotr`; `stop` sends the process `SIGTERM`.
+
+The watcher filters filesystem events to configured paths and runs scoped
+backups for the changed files or directories. Scoped backups preserve
+`metadata/index.json` entries outside the changed scope and only run matching
+custom backup commands.
 
 Daemon logs default to:
 
@@ -420,11 +426,13 @@ log_level = "info"
 
 `~` expands to the user's home directory. Relative paths are resolved from the
 dotr repository root. After changing these paths, restart the daemon with
-`dotr daemon stop` and `dotr daemon start`.
+`dotr daemon restart`.
 
 `log_level` supports `error`, `warn`, `info`, `debug`, and `trace`. The daemon
 redirects both stdout and stderr to the same `log_path`, so structured dotr logs
-and unexpected process output stay together.
+and unexpected process output stay together. Structured dotr log entries start
+with an ISO 8601 timestamp in the system time zone, followed by a tab and a JSON
+payload.
 
 Check the repository and config:
 
