@@ -864,7 +864,10 @@ fn change_summary(report: &BackupReport) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, os::unix::fs as unix_fs, thread, time::Duration};
+    use std::{cell::Cell, thread, time::Duration};
+
+    #[cfg(unix)]
+    use std::os::unix::fs as unix_fs;
 
     use age::secrecy::ExposeSecret;
     use tempfile::tempdir;
@@ -1876,6 +1879,7 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinks_are_followed_by_default() {
         let home_dir = tempdir().unwrap();
@@ -1922,6 +1926,7 @@ mod tests {
         assert!(entry.symlink_target.is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn broken_symlinks_are_skipped_when_following_symlinks() {
         let home_dir = tempdir().unwrap();
@@ -1963,6 +1968,7 @@ mod tests {
         assert!(!repo.path().join("files/home/links/current").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn follow_symlink_false_records_symlinks_not_followed() {
         let home_dir = tempdir().unwrap();

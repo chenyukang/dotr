@@ -420,7 +420,10 @@ fn watch_rules_from_toml(raw: &str, repo_root: &Path, env: &Environment) -> Watc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, os::unix::fs as unix_fs};
+    use std::fs;
+
+    #[cfg(unix)]
+    use std::os::unix::fs as unix_fs;
     use tempfile::tempdir;
 
     #[test]
@@ -596,6 +599,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn followed_symlink_target_events_map_back_to_source_scope() {
         let home = tempdir().unwrap();

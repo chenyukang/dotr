@@ -6,13 +6,28 @@ It copies selected files and directories into a Git repository, keeps a metadata
 index for restore, supports per-file age encryption, and can watch configured
 paths for changes.
 
-The design is intentionally simpler than a full dotfiles manager:
+## Install
 
-- no chezmoi or yadm dependency
-- no symlink-based config management
-- no filename encoding such as `dot_foo`
-- no templating in v0
-- restore is always explicit
+macOS or Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chenyukang/dotr/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/chenyukang/dotr/main/install.ps1 -UseB | iex
+```
+
+Install a specific release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chenyukang/dotr/main/install.sh | DOTR_VERSION=v0.1.0 sh
+```
+
+By default the installer writes to `~/.local/bin`. Override with
+`DOTR_INSTALL_DIR` if you prefer another directory.
 
 ## Build
 

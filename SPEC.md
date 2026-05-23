@@ -213,7 +213,7 @@ Example:
 
 ```toml
 [repository]
-root = "/Users/yukang/code/dotfiles"
+root = "~/code/dotfiles"
 store = "."
 
 [[path_set]]

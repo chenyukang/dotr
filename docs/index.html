@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>dotr - Rust-native config backup</title>
+    <link rel="icon" href="data:," />
+    <meta
+      name="description"
+      content="dotr is a Rust-native backup tool for personal configuration files, with Git storage, explicit restore, daemon watch mode, and age encryption."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header" aria-label="Primary navigation">
+      <a class="brand" href="#top" aria-label="dotr home">
+        <span class="brand-mark" aria-hidden="true">d</span>
+        <span>dotr</span>
+      </a>
+      <nav class="nav-links" aria-label="Sections">
+        <a href="#why">Why</a>
+        <a href="#commands">Commands</a>
+        <a href="#config">Config</a>
+        <a
+          class="github-link"
+          href="https://github.com/chenyukang/dotr"
+          aria-label="Open dotr on GitHub"
+          title="GitHub"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M12 .5A11.5 11.5 0 0 0 8.36 22.9c.58.11.79-.25.79-.56v-2.15c-3.21.7-3.89-1.37-3.89-1.37-.53-1.33-1.29-1.69-1.29-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.56-.29-5.26-1.28-5.26-5.71 0-1.26.45-2.3 1.19-3.11-.12-.29-.52-1.47.11-3.07 0 0 .98-.31 3.17 1.19A10.9 10.9 0 0 1 12 5.95c.98 0 1.96.13 2.88.39 2.19-1.5 3.16-1.19 3.16-1.19.64 1.6.24 2.78.12 3.07.74.81 1.18 1.85 1.18 3.11 0 4.44-2.7 5.41-5.27 5.7.42.37.78 1.09.78 2.2v3.11c0 .31.21.68.8.56A11.5 11.5 0 0 0 12 .5Z"
+            />
+          </svg>
+        </a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-label="dotr landing hero">
+        <canvas id="packet-field" aria-hidden="true"></canvas>
+        <div class="hero-scrim" aria-hidden="true"></div>
+        <div class="hero-inner">
+          <div class="hero-copy">
+            <p class="eyebrow">Rust-native dotfiles backup</p>
+            <h1>dotr</h1>
+            <p class="hero-lede">
+              Your config is scattered across shell files, app folders, package
+              inventories, and a few absolute paths. `dotr` backs up the
+              selected pieces into Git without taking over how those files are
+              managed.
+            </p>
+            <div class="problem-strip" aria-label="Problems dotr solves">
+              <span>selective paths</span>
+              <span>Git-backed history</span>
+              <span>explicit restore</span>
+            </div>
+            <div class="hero-actions" aria-label="Primary actions">
+              <a class="button primary" href="#commands">Commands</a>
+              <a class="button secondary" href="../README.md">README</a>
+            </div>
+          </div>
+          <div class="hero-commands" aria-label="Most common dotr commands">
+            <div class="terminal-top">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            <pre><code><span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">init</span> <span class="sh-path">~/dotbackup</span> <span class="sh-flag">--with-defaults</span> <span class="sh-flag">--set-default</span>
+<span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">add</span> <span class="sh-path">~/.zshrc</span>
+<span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">backup</span> <span class="sh-flag">--dry-run</span>
+<span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">backup</span> <span class="sh-flag">--commit</span> <span class="sh-flag">--push</span>
+<span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">restore</span> <span class="sh-flag">--dry-run</span> <span class="sh-path">~/.config/nvim</span></code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="why" class="signal-band" aria-label="Why dotr exists">
+        <div class="section-heading">
+          <p class="kicker">Why</p>
+          <h2>Dotfiles backup is easy to get almost right.</h2>
+          <p>
+            The annoying part is not copying files. It is deciding what counts
+            as durable config, avoiding noisy app state, and keeping restore
+            boring enough to trust.
+          </p>
+        </div>
+        <div class="signal-grid">
+          <article>
+            <p class="kicker">Too broad</p>
+            <h2>App folders mix config with churn.</h2>
+            <p>
+              `~/.config`, editor folders, and agent homes often contain logs,
+              caches, databases, generated files, and credentials next to the
+              small files you meant to keep.
+            </p>
+          </article>
+          <article>
+            <p class="kicker">Too magical</p>
+            <h2>Dotfile managers can own the shape.</h2>
+            <p>
+              Templates, encoded filenames, and symlink farms are powerful, but
+              they are a lot of system for people who mainly want a private,
+              restorable backup.
+            </p>
+          </article>
+          <article>
+            <p class="kicker">Too risky</p>
+            <h2>Restore should never be implied.</h2>
+            <p>
+              `dotr watch` only backs up. Restore is a separate command,
+              previewable by default, and absolute paths require an explicit
+              allow flag.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="commands" class="command-section" aria-label="Common commands">
+        <div class="section-heading">
+          <p class="kicker">Common commands</p>
+          <h2>The daily surface area stays small.</h2>
+        </div>
+        <div class="command-grid">
+          <div class="command-line">
+            <span class="prompt">$</span>
+            <code>dotr init ~/dotbackup --with-defaults --set-default</code>
+          </div>
+          <div class="command-line">
+            <span class="prompt">$</span>
+            <code>dotr add ~/.config/nvim</code>
+          </div>
+          <div class="command-line">
+            <span class="prompt">$</span>
+            <code>dotr backup --dry-run</code>
+          </div>
+          <div class="command-line">
+            <span class="prompt">$</span>
+            <code>dotr backup --commit --push</code>
+          </div>
+          <div class="command-line">
+            <span class="prompt">$</span>
+            <code>dotr daemon start | status | restart | stop</code>
+          </div>
+          <div class="command-line">
+            <span class="prompt">$</span>
+            <code>dotr restore --dry-run ~/.zshrc</code>
+          </div>
+          <div class="command-line">
+            <span class="prompt">$</span>
+            <code>dotr restore --apply ~/.zshrc</code>
+          </div>
+          <div class="command-line">
+            <span class="prompt">$</span>
+            <code>dotr doctor</code>
+          </div>
+        </div>
+      </section>
+
+      <section id="config" class="config-section" aria-label="Configuration preview">
+        <div class="section-heading">
+          <p class="kicker">Compact config</p>
+          <h2>Readable enough to audit at 1 a.m.</h2>
+        </div>
+        <pre class="code-panel"><code><span class="tok-section">[[path_set]]</span>
+<span class="tok-key">base</span> <span class="tok-op">=</span> <span class="tok-string">"~"</span>
+<span class="tok-key">items</span> <span class="tok-op">=</span> <span class="tok-punct">[</span>
+  <span class="tok-string">".zshrc"</span><span class="tok-punct">,</span>
+  <span class="tok-string">".gitconfig"</span><span class="tok-punct">,</span>
+  <span class="tok-punct">{</span> <span class="tok-key">src</span> <span class="tok-op">=</span> <span class="tok-string">".config/nvim"</span><span class="tok-punct">,</span> <span class="tok-key">include</span> <span class="tok-op">=</span> <span class="tok-punct">[</span><span class="tok-string">"init.lua"</span><span class="tok-punct">,</span> <span class="tok-string">"lua/**"</span><span class="tok-punct">]</span> <span class="tok-punct">}</span><span class="tok-punct">,</span>
+  <span class="tok-punct">{</span> <span class="tok-key">src</span> <span class="tok-op">=</span> <span class="tok-string">".hermes"</span><span class="tok-punct">,</span> <span class="tok-key">include</span> <span class="tok-op">=</span> <span class="tok-punct">[</span><span class="tok-string">"config.yaml"</span><span class="tok-punct">,</span> <span class="tok-string">"skills/**"</span><span class="tok-punct">]</span> <span class="tok-punct">}</span><span class="tok-punct">,</span>
+<span class="tok-punct">]</span>
+
+<span class="tok-section">[[custom_backup]]</span>
+<span class="tok-key">name</span> <span class="tok-op">=</span> <span class="tok-string">"vscode"</span>
+<span class="tok-key">backup</span> <span class="tok-op">=</span> <span class="tok-string">"code --list-extensions &gt; ~/.config/vscode/extensions.txt"</span>
+<span class="tok-key">paths</span> <span class="tok-op">=</span> <span class="tok-punct">[</span><span class="tok-string">"~/.config/vscode/extensions.txt"</span><span class="tok-punct">]</span></code></pre>
+      </section>
+
+      <section id="workflow" class="workflow-section" aria-label="Workflow">
+        <div class="section-heading">
+          <p class="kicker">Runtime model</p>
+          <h2>Small loop, inspectable artifacts.</h2>
+        </div>
+        <div class="workflow">
+          <div>
+            <span class="step">01</span>
+            <h3>Select</h3>
+            <p>Use `path_set`, includes, excludes, and custom inventories.</p>
+          </div>
+          <div>
+            <span class="step">02</span>
+            <h3>Copy</h3>
+            <p>Hash source files, skip volatile state, update `files/`.</p>
+          </div>
+          <div>
+            <span class="step">03</span>
+            <h3>Index</h3>
+            <p>Write metadata for restore, permissions, and encrypted entries.</p>
+          </div>
+          <div>
+            <span class="step">04</span>
+            <h3>Commit</h3>
+            <p>Let Git carry history, diffs, remotes, and normal review habits.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <a href="https://github.com/chenyukang/dotr">dotr</a>
+      <a href="https://github.com/chenyukang/dotr/blob/main/SPEC.md">Specification</a>
+      <a href="https://github.com/chenyukang/dotr/blob/main/README.md">README</a>
+    </footer>
+
+    <script src="./main.js"></script>
+  </body>
+</html>

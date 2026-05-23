@@ -261,6 +261,7 @@ fn create_symlink(source: &Path, target: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::fs as unix_fs;
 
     use age::secrecy::ExposeSecret;
@@ -631,6 +632,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn restores_symlink_itself() {
         let home_dir = tempdir().unwrap();
