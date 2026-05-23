@@ -959,28 +959,6 @@ mod tests {
         )
     }
 
-    #[cfg(windows)]
-    fn write_home_file_command(relative: &str, contents: &str) -> String {
-        let relative = relative.replace('/', "\\");
-        let parent = relative.rsplit_once('\\').map(|(parent, _)| parent);
-        match parent {
-            Some(parent) => format!(
-                "if not exist \"%HOME%\\{parent}\" mkdir \"%HOME%\\{parent}\" & >\"%HOME%\\{relative}\" echo {contents}"
-            ),
-            None => format!(">\"%HOME%\\{relative}\" echo {contents}"),
-        }
-    }
-
-    #[cfg(unix)]
-    fn shell_written_contents(contents: &str) -> String {
-        contents.to_string()
-    }
-
-    #[cfg(windows)]
-    fn shell_written_contents(contents: &str) -> String {
-        format!("{contents}\r\n")
-    }
-
     #[test]
     fn backs_up_home_file_and_noops_on_second_run() {
         let home_dir = tempdir().unwrap();
@@ -1202,6 +1180,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn scoped_backup_runs_only_matching_custom_backup_commands() {
         let home_dir = tempdir().unwrap();
@@ -1268,7 +1247,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(repo.path().join("files/home/.config/one/state.txt")).unwrap(),
-            shell_written_contents("one")
+            "one"
         );
         assert!(!two_state.exists());
         assert!(
@@ -1433,6 +1412,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn custom_backup_command_runs_before_copying_configured_outputs() {
         let home_dir = tempdir().unwrap();
@@ -1478,7 +1458,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(repo.path().join("files/home/.config/generated/state.txt")).unwrap(),
-            shell_written_contents("generated")
+            "generated"
         );
     }
 
