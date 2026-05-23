@@ -1,6 +1,7 @@
 pub mod backup;
 pub mod cli;
 pub mod config;
+pub mod custom_backup;
 pub mod daemon;
 pub mod doctor;
 pub mod encryption;

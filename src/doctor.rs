@@ -19,12 +19,13 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<DoctorReport> {
     let mut report = DoctorReport::default();
 
     for path in &config.paths {
-        let _ = globset_from_patterns(path.exclude.iter().map(String::as_str))?;
-        let source = env.expand_tilde(&path.src);
-        if !source.exists() {
-            report
-                .warnings
-                .push(format!("source does not exist: {}", source.display()));
+        check_path(path, env, true, &mut report)?;
+    }
+
+    for custom in &config.custom_backups {
+        let warn_missing = custom.backup_command.is_none();
+        for path in &custom.paths {
+            check_path(path, env, warn_missing, &mut report)?;
         }
     }
 
@@ -56,6 +57,23 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<DoctorReport> {
     }
 
     Ok(report)
+}
+
+fn check_path(
+    path: &crate::config::PathConfig,
+    env: &Environment,
+    warn_missing: bool,
+    report: &mut DoctorReport,
+) -> Result<()> {
+    let _ = globset_from_patterns(path.exclude.iter().map(String::as_str))?;
+    let source = env.expand_tilde(&path.src);
+    if warn_missing && !source.exists() {
+        report
+            .warnings
+            .push(format!("source does not exist: {}", source.display()));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -142,8 +142,21 @@ mod tests {
 
         let config = Config::load(&report.repo_root).unwrap();
         assert!(config.paths.len() > 10);
+        assert!(!config.custom_backups.is_empty());
         assert!(config.paths.iter().any(|path| path.src == "~/.zshrc"));
         assert!(config.paths.iter().any(|path| path.src == "~/.config/nvim"));
+        assert!(
+            config
+                .custom_backups
+                .iter()
+                .any(|custom| custom.name == "homebrew")
+        );
+        assert!(
+            config
+                .custom_backups
+                .iter()
+                .any(|custom| custom.name == "vscode")
+        );
 
         let toml = fs::read_to_string(report.repo_root.join("dotr.toml")).unwrap();
         assert!(!toml.contains("include = []"));
@@ -167,5 +180,6 @@ mod tests {
         let toml = fs::read_to_string(report.repo_root.join("dotr.toml")).unwrap();
 
         assert!(!toml.contains("path = []"));
+        assert!(!toml.contains("custom_backup = []"));
     }
 }

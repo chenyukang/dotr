@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::{
     config::{Config, index_path},
-    encryption,
+    custom_backup, encryption,
     environment::Environment,
     hash::sha256_bytes,
     index::{EntryKind, Index, IndexEntry},
@@ -96,6 +96,15 @@ pub fn run_with_config(
         report.restored += 1;
         report.actions.push(action);
     }
+
+    custom_backup::run_restore_commands(
+        config,
+        repo_root,
+        env,
+        dry_run,
+        &options.targets,
+        &mut report.actions,
+    )?;
 
     Ok(report)
 }
@@ -260,7 +269,7 @@ mod tests {
     use super::*;
     use crate::{
         backup::{self, BackupOptions},
-        config::PathConfig,
+        config::{CustomBackupConfig, PathConfig},
         init,
     };
 
@@ -389,6 +398,112 @@ mod tests {
             "nvim"
         );
         assert!(!home.join(".config/fish/config.fish").exists());
+    }
+
+    #[test]
+    fn restore_runs_matching_custom_restore_command_after_files() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join(".config/generated")).unwrap();
+        fs::write(home.join(".config/generated/state.txt"), "state").unwrap();
+
+        let mut config = Config::default();
+        config.custom_backups.push(CustomBackupConfig {
+            name: "generated".to_string(),
+            backup_command: None,
+            restore_command: Some("printf restored > ~/.custom-restored".to_string()),
+            paths: vec![PathConfig {
+                src: "~/.config/generated/state.txt".to_string(),
+                include: Vec::new(),
+                exclude: Vec::new(),
+                follow_symlink: true,
+                include_binary_file: false,
+                encrypt: false,
+            }],
+        });
+        let repo = prepare_repo(home, &config);
+        let env = Environment::new(home.to_path_buf()).unwrap();
+        backup::run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &crate::git::CommandGit,
+        )
+        .unwrap();
+        fs::remove_file(home.join(".config/generated/state.txt")).unwrap();
+
+        let report = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &RestoreOptions {
+                apply: true,
+                targets: vec!["~/.config/generated".to_string()],
+                ..RestoreOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(home.join(".config/generated/state.txt")).unwrap(),
+            "state"
+        );
+        assert_eq!(
+            fs::read_to_string(home.join(".custom-restored")).unwrap(),
+            "restored"
+        );
+        assert!(
+            report
+                .actions
+                .iter()
+                .any(|action| action.starts_with("run custom restore generated:"))
+        );
+    }
+
+    #[test]
+    fn dry_run_restore_reports_custom_restore_without_running_it() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        let mut config = Config::default();
+        config.custom_backups.push(CustomBackupConfig {
+            name: "generated".to_string(),
+            backup_command: None,
+            restore_command: Some("printf restored > ~/.custom-restored".to_string()),
+            paths: vec![PathConfig {
+                src: "~/.config/generated/state.txt".to_string(),
+                include: Vec::new(),
+                exclude: Vec::new(),
+                follow_symlink: true,
+                include_binary_file: false,
+                encrypt: false,
+            }],
+        });
+        let repo = prepare_repo(home, &config);
+        let env = Environment::new(home.to_path_buf()).unwrap();
+
+        let report = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &RestoreOptions {
+                dry_run: true,
+                targets: vec!["~/.config/generated".to_string()],
+                ..RestoreOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert!(!home.join(".custom-restored").exists());
+        assert!(
+            report
+                .actions
+                .iter()
+                .any(|action| action.starts_with("would run custom restore generated:"))
+        );
     }
 
     #[test]

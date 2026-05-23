@@ -18,6 +18,7 @@ pub const STARTER_PATHS: &[&str] = &[
     "~/.zprofile",
     "~/.zshenv",
     "~/.zshrc",
+    "~/.zpreztorc",
     "~/.inputrc",
     "~/.editorconfig",
     "~/.gitconfig",
@@ -116,6 +117,12 @@ pub struct Config {
     pub repository: RepositoryConfig,
     #[serde(default, rename = "path", skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<PathConfig>,
+    #[serde(
+        default,
+        rename = "custom_backup",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub custom_backups: Vec<CustomBackupConfig>,
     #[serde(default)]
     pub watch: WatchConfig,
     #[serde(default, skip_serializing_if = "is_default_daemon_config")]
@@ -158,6 +165,17 @@ pub struct PathConfig {
     pub include_binary_file: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub encrypt: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CustomBackupConfig {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_command: Option<String>,
+    #[serde(default, rename = "path", skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<PathConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -278,7 +296,15 @@ impl Config {
     }
 
     pub fn has_encrypted_paths(&self) -> bool {
-        self.paths.iter().any(|path| path.encrypt)
+        self.path_configs().any(|path| path.encrypt)
+    }
+
+    pub fn path_configs(&self) -> impl Iterator<Item = &PathConfig> {
+        self.paths.iter().chain(
+            self.custom_backups
+                .iter()
+                .flat_map(|custom| custom.paths.iter()),
+        )
     }
 
     pub fn starter(with_defaults: bool) -> Self {
@@ -286,6 +312,7 @@ impl Config {
 
         if with_defaults {
             config.paths = starter_paths();
+            config.custom_backups = starter_custom_backups();
         }
 
         config
@@ -293,17 +320,98 @@ impl Config {
 }
 
 pub fn starter_paths() -> Vec<PathConfig> {
-    STARTER_PATHS
+    let mut paths = STARTER_PATHS
         .iter()
-        .map(|src| PathConfig {
-            src: (*src).to_string(),
-            include: Vec::new(),
-            exclude: Vec::new(),
-            follow_symlink: true,
-            include_binary_file: false,
-            encrypt: false,
-        })
-        .collect()
+        .map(|src| path_config(src))
+        .collect::<Vec<_>>();
+
+    paths.extend([
+        path_config_with_includes("~/.config/atuin", &["config.toml"]),
+        path_config_with_includes("~/.config/fastfetch", &["config.jsonc"]),
+        path_config_with_includes("~/.config/fresh", &["config.json"]),
+        path_config_with_includes("~/.config/gh", &["config.yml"]),
+        path_config_with_includes("~/.config/gh-dash", &["config.yml"]),
+        path_config_with_includes("~/.config/jj", &["config.toml"]),
+        path_config("~/.jjconfig.toml"),
+        path_config_with_includes("~/.config/karabiner", &["karabiner.json"]),
+        path_config_with_includes("~/.config/lvim", &["config.lua"]),
+        path_config_with_includes("~/.config/mise", &["config.toml"]),
+        path_config_with_includes("~/.config/openspeak", &["config.toml"]),
+        path_config_with_includes("~/.config/ripasso", &["settings.toml"]),
+        path_config_with_includes(
+            "~/.config/yazi",
+            &["yazi.toml", "keymap.toml", "theme.toml"],
+        ),
+        path_config_with_includes(
+            "~/.config/zed",
+            &["settings.json", "keymap.json", "tasks.json", "snippets/**"],
+        ),
+        path_config_with_includes("~/.config/zellij", &["config.kdl"]),
+        path_config_with_includes("~/.warp", &["keybindings.yaml"]),
+        path_config_with_includes("~/.hammerspoon", &["init.lua"]),
+    ]);
+
+    paths
+}
+
+pub fn starter_custom_backups() -> Vec<CustomBackupConfig> {
+    vec![
+        CustomBackupConfig {
+            name: "homebrew".to_string(),
+            backup_command: Some(
+                "if command -v brew >/dev/null 2>&1; then mkdir -p ~/.config/homebrew && brew bundle dump --file ~/.config/homebrew/Brewfile --force; else echo 'dotr: skipping homebrew backup; brew not found' >&2; fi"
+                    .to_string(),
+            ),
+            restore_command: Some(
+                "if command -v brew >/dev/null 2>&1 && [ -f ~/.config/homebrew/Brewfile ]; then brew bundle --file ~/.config/homebrew/Brewfile; else echo 'dotr: skipping homebrew restore; brew or Brewfile not found' >&2; fi"
+                    .to_string(),
+            ),
+            paths: vec![path_config("~/.config/homebrew/Brewfile")],
+        },
+        CustomBackupConfig {
+            name: "vscode".to_string(),
+            backup_command: Some(
+                "if command -v code >/dev/null 2>&1; then mkdir -p ~/.config/vscode && code --list-extensions > ~/.config/vscode/extensions.txt; else echo 'dotr: skipping VS Code extension backup; code not found' >&2; fi"
+                    .to_string(),
+            ),
+            restore_command: Some(
+                "if command -v code >/dev/null 2>&1 && [ -f ~/.config/vscode/extensions.txt ]; then xargs -n 1 code --install-extension < ~/.config/vscode/extensions.txt; else echo 'dotr: skipping VS Code extension restore; code or extensions.txt not found' >&2; fi"
+                    .to_string(),
+            ),
+            paths: vec![
+                path_config("~/Library/Application Support/Code/User/settings.json"),
+                path_config("~/Library/Application Support/Code/User/keybindings.json"),
+                path_config("~/Library/Application Support/Code/User/tasks.json"),
+                path_config("~/Library/Application Support/Code/User/snippets"),
+                path_config("~/.config/Code/User/settings.json"),
+                path_config("~/.config/Code/User/keybindings.json"),
+                path_config("~/.config/Code/User/tasks.json"),
+                path_config("~/.config/Code/User/snippets"),
+                path_config("~/.config/vscode/extensions.txt"),
+            ],
+        },
+    ]
+}
+
+pub fn path_config(src: &str) -> PathConfig {
+    PathConfig {
+        src: src.to_string(),
+        include: Vec::new(),
+        exclude: Vec::new(),
+        follow_symlink: true,
+        include_binary_file: false,
+        encrypt: false,
+    }
+}
+
+pub fn path_config_with_includes(src: &str, include: &[&str]) -> PathConfig {
+    PathConfig {
+        include: include
+            .iter()
+            .map(|pattern| (*pattern).to_string())
+            .collect(),
+        ..path_config(src)
+    }
 }
 
 pub fn config_path(repo_root: &Path) -> PathBuf {
@@ -441,13 +549,27 @@ mod tests {
             exclude = ["**/tmp/**"]
 
             [daemon]
-            log_path = "~/logs/dotr-watch.jsonl"
+            log_path = "~/logs/dotr-watch.log"
             log_level = "debug"
+
+            [[custom_backup]]
+            name = "packages"
+            backup_command = "pkg dump > ~/.config/packages/list.txt"
+            restore_command = "pkg restore < ~/.config/packages/list.txt"
+
+            [[custom_backup.path]]
+            src = "~/.config/packages/list.txt"
             "#,
         )
         .unwrap();
 
         assert_eq!(config.paths.len(), 2);
+        assert_eq!(config.custom_backups.len(), 1);
+        assert_eq!(config.custom_backups[0].name, "packages");
+        assert_eq!(
+            config.custom_backups[0].paths[0].src,
+            "~/.config/packages/list.txt"
+        );
         assert!(config.paths[1].encrypt);
         assert!(!config.paths[1].follow_symlink);
         assert!(config.paths[1].include_binary_file);
@@ -455,7 +577,7 @@ mod tests {
         assert_eq!(config.watch.debounce_secs, 30);
         assert_eq!(
             config.daemon.log_path.as_deref(),
-            Some("~/logs/dotr-watch.jsonl")
+            Some("~/logs/dotr-watch.log")
         );
         assert_eq!(config.daemon.log_level.as_deref(), Some("debug"));
     }
@@ -473,9 +595,84 @@ mod tests {
         assert!(sources.contains(&"~/.gitconfig"));
         assert!(sources.contains(&"~/.ssh/config"));
         assert!(sources.contains(&"~/.config/nvim"));
+        assert!(sources.contains(&"~/.zpreztorc"));
+        assert!(sources.contains(&"~/.config/atuin"));
+        assert!(sources.contains(&"~/.config/gh"));
+        assert!(sources.contains(&"~/.config/yazi"));
+        assert!(sources.contains(&"~/.config/zed"));
         assert!(!sources.contains(&"~/projects/bin"));
         assert!(!sources.contains(&"~/.custom-personal-tool"));
         assert!(config.paths.iter().all(|path| path.follow_symlink));
         assert!(config.paths.iter().all(|path| !path.include_binary_file));
+        assert_eq!(
+            config
+                .paths
+                .iter()
+                .find(|path| path.src == "~/.config/gh")
+                .unwrap()
+                .include,
+            vec!["config.yml"]
+        );
+        assert_eq!(
+            config
+                .paths
+                .iter()
+                .find(|path| path.src == "~/.config/zed")
+                .unwrap()
+                .include,
+            vec!["settings.json", "keymap.json", "tasks.json", "snippets/**"]
+        );
+    }
+
+    #[test]
+    fn starter_custom_backups_cover_homebrew_and_vscode() {
+        let config = Config::starter(true);
+        let names = config
+            .custom_backups
+            .iter()
+            .map(|custom| custom.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"homebrew"));
+        assert!(names.contains(&"vscode"));
+
+        let homebrew = config
+            .custom_backups
+            .iter()
+            .find(|custom| custom.name == "homebrew")
+            .unwrap();
+        assert_eq!(homebrew.paths[0].src, "~/.config/homebrew/Brewfile");
+        assert!(
+            homebrew
+                .backup_command
+                .as_deref()
+                .unwrap()
+                .contains("brew bundle dump")
+        );
+
+        let vscode = config
+            .custom_backups
+            .iter()
+            .find(|custom| custom.name == "vscode")
+            .unwrap();
+        assert!(
+            vscode
+                .paths
+                .iter()
+                .any(|path| path.src == "~/Library/Application Support/Code/User/settings.json")
+        );
+        assert!(
+            vscode
+                .paths
+                .iter()
+                .any(|path| path.src == "~/.config/vscode/extensions.txt")
+        );
+        assert!(
+            vscode
+                .restore_command
+                .as_deref()
+                .unwrap()
+                .contains("--install-extension")
+        );
     }
 }

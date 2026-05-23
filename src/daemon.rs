@@ -24,7 +24,7 @@ mod imp {
 
     const CONFIG_FILE_NAME: &str = "daemon.toml";
     const PID_FILE_NAME: &str = "dotr-watch.pid";
-    const LOG_FILE_NAME: &str = "dotr-watch.jsonl";
+    const LOG_FILE_NAME: &str = "dotr-watch.log";
     const DEFAULT_LOG_LEVEL: &str = "info";
     const STOP_TIMEOUT: Duration = Duration::from_secs(5);
     const STOP_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -126,7 +126,7 @@ mod imp {
                 .or(self.stderr_log.as_deref())
                 .or(self.stdout_log.as_deref())
                 .map(PathBuf::from)
-                .unwrap_or_else(|| self.pid_file().with_extension("jsonl"))
+                .unwrap_or_else(|| self.pid_file().with_extension("log"))
         }
 
         fn log_level(&self) -> &str {
@@ -170,7 +170,7 @@ mod imp {
         let repo_root = repo_root
             .canonicalize()
             .unwrap_or_else(|_| repo_root.to_path_buf());
-        let paths = daemon_paths_for_repo(env, &repo_root, &dotr_config);
+        let paths = daemon_paths_for_repo(env, &repo_root, &dotr_config)?;
         create_parent_dir(&paths.config)?;
         create_parent_dir(&paths.pid_file)?;
         create_parent_dir(&paths.log_path)?;
@@ -317,9 +317,13 @@ mod imp {
         daemon_paths(env).config.is_file()
     }
 
-    fn daemon_paths_for_repo(env: &Environment, repo_root: &Path, config: &Config) -> DaemonPaths {
+    fn daemon_paths_for_repo(
+        env: &Environment,
+        repo_root: &Path,
+        config: &Config,
+    ) -> Result<DaemonPaths> {
         let defaults = default_daemon_paths(env);
-        DaemonPaths {
+        Ok(DaemonPaths {
             config: defaults.config,
             pid_file: defaults.pid_file,
             log_path: config
@@ -331,8 +335,8 @@ mod imp {
                 .or(config.daemon.stdout_log.as_deref())
                 .map(|path| resolve_config_path(env, repo_root, path))
                 .unwrap_or(defaults.log_path),
-            log_level: configured_log_level(config),
-        }
+            log_level: configured_log_level(config)?,
+        })
     }
 
     fn default_daemon_paths(env: &Environment) -> DaemonPaths {
@@ -347,13 +351,15 @@ mod imp {
         }
     }
 
-    fn configured_log_level(config: &Config) -> String {
+    fn configured_log_level(config: &Config) -> Result<String> {
         let raw = config
             .daemon
             .log_level
             .as_deref()
             .unwrap_or(DEFAULT_LOG_LEVEL);
-        structured_log::normalize_level(raw).unwrap_or(DEFAULT_LOG_LEVEL).to_string()
+        structured_log::normalize_level(raw)
+            .map(str::to_string)
+            .with_context(|| format!("invalid daemon.log_level: {raw}"))
     }
 
     fn default_installed_log_level() -> String {
@@ -474,7 +480,7 @@ mod imp {
             );
             assert_eq!(
                 paths.log_path,
-                PathBuf::from("/Users/me/.local/state/dotr/dotr-watch.jsonl")
+                PathBuf::from("/Users/me/.local/state/dotr/dotr-watch.log")
             );
             assert_eq!(paths.log_level, "info");
         }
@@ -506,23 +512,22 @@ mod imp {
                 repo.path().join("dotr.toml"),
                 r#"
                 [daemon]
-                log_path = "~/logs/dotr-watch.jsonl"
+                log_path = "~/logs/dotr-watch.log"
                 log_level = "debug"
                 "#,
             )
             .unwrap();
             let env = env_for(home.path());
-            let repo_root = repo.path().canonicalize().unwrap();
 
             let config = configure(&env, repo.path()).unwrap();
 
-            assert_eq!(config.log_path(), home.path().join("logs/dotr-watch.jsonl"));
+            assert_eq!(config.log_path(), home.path().join("logs/dotr-watch.log"));
             assert_eq!(config.log_level(), "debug");
 
             let raw = fs::read_to_string(daemon_paths(&env).config).unwrap();
             assert!(raw.contains(&format!(
                 "log_path = \"{}\"",
-                home.path().join("logs/dotr-watch.jsonl").display()
+                home.path().join("logs/dotr-watch.log").display()
             )));
             assert!(raw.contains("log_level = \"debug\""));
             assert!(!raw.contains("stdout_log"));
@@ -548,6 +553,25 @@ mod imp {
 
             assert_eq!(config.log_path(), repo_root.join("logs/dotr.err.log"));
             assert_eq!(config.log_level(), "info");
+        }
+
+        #[test]
+        fn configure_rejects_invalid_log_level() {
+            let home = tempdir().unwrap();
+            let repo = tempdir().unwrap();
+            fs::write(
+                repo.path().join("dotr.toml"),
+                r#"
+                [daemon]
+                log_level = "verbose"
+                "#,
+            )
+            .unwrap();
+            let env = env_for(home.path());
+
+            let err = configure(&env, repo.path()).unwrap_err();
+
+            assert!(err.to_string().contains("invalid daemon.log_level"));
         }
 
         #[test]
@@ -608,8 +632,7 @@ mod imp {
         pub name: &'static str,
         pub pid: u32,
         pub already_running: bool,
-        pub stdout_log: PathBuf,
-        pub stderr_log: PathBuf,
+        pub log_path: PathBuf,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -635,8 +658,8 @@ mod imp {
         pub state: DaemonState,
         pub pid: Option<u32>,
         pub repo_root: Option<PathBuf>,
-        pub stdout_log: PathBuf,
-        pub stderr_log: PathBuf,
+        pub log_path: PathBuf,
+        pub log_level: String,
     }
 
     pub fn start(_env: &Environment, _repo_root: Option<&Path>) -> Result<StartReport> {

@@ -47,7 +47,7 @@ enum Commands {
         target: PathBuf,
         #[arg(
             long,
-            help = "Write a generic starter config for common shell, Git, SSH, editor, and terminal paths"
+            help = "Write a generic starter config for common shell, Git, SSH, editor, terminal, package, and extension paths"
         )]
         with_defaults: bool,
         #[arg(long, help = "Create the dotr layout without running git init")]

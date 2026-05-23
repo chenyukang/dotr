@@ -11,12 +11,14 @@ use std::{
 use anyhow::{Context, Result};
 use globset::GlobSet;
 use notify::{RecursiveMode, Watcher};
+use serde_json::json;
 
 use crate::{
     backup::{self, BackupOptions},
     config::{Config, default_exclude_set, globset_from_patterns},
     environment::Environment,
     paths::absolutize,
+    structured_log,
 };
 
 pub fn run(repo_root: &Path, env: &Environment) -> Result<()> {
@@ -32,20 +34,27 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<()> {
     })
     .context("failed to create filesystem watcher")?;
 
-    eprintln!("watch: repo {}", repo_root.display());
-    eprintln!("watch: debounce {}s", debounce.as_secs());
+    structured_log::info(
+        "watch_started",
+        &[
+            ("repo", json!(repo_root.display().to_string())),
+            ("debounce_secs", json!(debounce.as_secs())),
+        ],
+    );
     for spec in &watch_specs {
         watcher
             .watch(&spec.path, spec.recursive_mode())
             .with_context(|| format!("failed to watch {}", spec.path.display()))?;
-        eprintln!(
-            "watch: watching {} ({})",
-            spec.path.display(),
-            spec.mode_label()
+        structured_log::info(
+            "watch_path_registered",
+            &[
+                ("path", json!(spec.path.display().to_string())),
+                ("recursive", json!(spec.recursive)),
+            ],
         );
     }
     if watch_specs.is_empty() {
-        eprintln!("watch: no source paths are currently watchable");
+        structured_log::warn("watch_no_sources", &[]);
     }
 
     let running = Arc::new(AtomicBool::new(false));
@@ -58,9 +67,9 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<()> {
         {
             continue;
         }
-        eprintln!(
-            "watch: change detected {}",
-            display_event_paths(&event.paths)
+        structured_log::info(
+            "watch_change_detected",
+            &[("paths", json!(display_event_paths(&event.paths)))],
         );
 
         let mut deadline = debounce_deadline(Instant::now(), debounce);
@@ -86,7 +95,7 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<()> {
         if running.swap(true, Ordering::SeqCst) {
             continue;
         }
-        eprintln!("watch: running backup");
+        structured_log::info("backup_started", &[]);
         let result = backup::run(
             repo_root,
             env,
@@ -96,13 +105,25 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<()> {
             },
         );
         running.store(false, Ordering::SeqCst);
-        let report = result?;
+        let report = match result {
+            Ok(report) => report,
+            Err(err) => {
+                structured_log::error("backup_failed", &[("error", json!(err.to_string()))]);
+                return Err(err);
+            }
+        };
         for action in &report.actions {
-            eprintln!("watch: {action}");
+            structured_log::info("backup_action", &[("action", json!(action))]);
         }
-        eprintln!(
-            "watch: backup complete: {} added, {} updated, {} deleted, {} unchanged, {} skipped",
-            report.added, report.updated, report.deleted, report.unchanged, report.skipped
+        structured_log::info(
+            "backup_completed",
+            &[
+                ("added", json!(report.added)),
+                ("updated", json!(report.updated)),
+                ("deleted", json!(report.deleted)),
+                ("unchanged", json!(report.unchanged)),
+                ("skipped", json!(report.skipped)),
+            ],
         );
     }
 }
@@ -123,14 +144,6 @@ impl WatchSpec {
             RecursiveMode::Recursive
         } else {
             RecursiveMode::NonRecursive
-        }
-    }
-
-    fn mode_label(&self) -> &'static str {
-        if self.recursive {
-            "recursive"
-        } else {
-            "non-recursive"
         }
     }
 }
@@ -173,7 +186,7 @@ impl WatchRules {
     pub fn from_config(config: &Config, repo_root: &Path, env: &Environment) -> Result<Self> {
         let default_excludes = default_exclude_set()?;
         let mut rules = Vec::new();
-        for path_config in &config.paths {
+        for path_config in config.path_configs() {
             let source = absolutize(&env.expand_tilde(&path_config.src), repo_root);
             let include = if path_config.include.is_empty() {
                 None
@@ -431,6 +444,30 @@ mod tests {
         ));
         assert!(should_ignore_event_path(
             Path::new("/home/me/.codex/skills/.system/openai/SKILL.md"),
+            &repo,
+            &rules
+        ));
+    }
+
+    #[test]
+    fn custom_backup_paths_are_watch_sources() {
+        let env = Environment::new(PathBuf::from("/home/me")).unwrap();
+        let repo = PathBuf::from("/repo");
+        let rules = watch_rules_from_toml(
+            r#"
+            [[custom_backup]]
+            name = "vscode"
+            backup_command = "code --list-extensions > ~/.config/vscode/extensions.txt"
+
+            [[custom_backup.path]]
+            src = "~/.config/vscode/extensions.txt"
+            "#,
+            &repo,
+            &env,
+        );
+
+        assert!(!should_ignore_event_path(
+            Path::new("/home/me/.config/vscode/extensions.txt"),
             &repo,
             &rules
         ));

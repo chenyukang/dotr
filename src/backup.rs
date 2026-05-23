@@ -12,7 +12,7 @@ use walkdir::WalkDir;
 
 use crate::{
     config::{Config, default_exclude_set, globset_from_patterns, index_path},
-    encryption,
+    custom_backup, encryption,
     environment::Environment,
     git::{CommandGit, GitBackend},
     hash::{sha256_bytes, sha256_file},
@@ -106,7 +106,16 @@ fn run_with_config_and_progress(
     let mut report = BackupReport::default();
     let mut current = BTreeMap::<String, IndexEntry>::new();
 
-    for path_config in &config.paths {
+    custom_backup::run_backup_commands(
+        config,
+        repo_root,
+        env,
+        options.dry_run,
+        &mut report.actions,
+        progress,
+    )?;
+
+    for path_config in config.path_configs() {
         let source = absolutize(&env.expand_tilde(&path_config.src), repo_root);
         progress.source(&source);
         if !source_exists(&source, path_config.follow_symlink) {
@@ -691,7 +700,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::{config::PathConfig, init};
+    use crate::{
+        config::{CustomBackupConfig, PathConfig},
+        init,
+    };
 
     #[derive(Default)]
     struct RecordingProgress {
@@ -848,6 +860,99 @@ mod tests {
                 .events
                 .iter()
                 .any(|event| event == "phase writing metadata/index.json")
+        );
+    }
+
+    #[test]
+    fn custom_backup_command_runs_before_copying_configured_outputs() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        let mut config = Config::default();
+        config.custom_backups.push(CustomBackupConfig {
+            name: "generated".to_string(),
+            backup_command: Some(
+                "mkdir -p ~/.config/generated && printf generated > ~/.config/generated/state.txt"
+                    .to_string(),
+            ),
+            restore_command: None,
+            paths: vec![PathConfig {
+                src: "~/.config/generated/state.txt".to_string(),
+                include: Vec::new(),
+                exclude: Vec::new(),
+                follow_symlink: true,
+                include_binary_file: false,
+                encrypt: false,
+            }],
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+
+        let report = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &CommandGit,
+        )
+        .unwrap();
+
+        assert!(
+            report
+                .actions
+                .iter()
+                .any(|action| action.starts_with("run custom backup generated:"))
+        );
+        assert_eq!(
+            fs::read_to_string(repo.path().join("files/home/.config/generated/state.txt")).unwrap(),
+            "generated"
+        );
+    }
+
+    #[test]
+    fn dry_run_custom_backup_does_not_run_command() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        let mut config = Config::default();
+        config.custom_backups.push(CustomBackupConfig {
+            name: "generated".to_string(),
+            backup_command: Some(
+                "mkdir -p ~/.config/generated && touch ~/.config/generated/state.txt".to_string(),
+            ),
+            restore_command: None,
+            paths: vec![PathConfig {
+                src: "~/.config/generated/state.txt".to_string(),
+                include: Vec::new(),
+                exclude: Vec::new(),
+                follow_symlink: true,
+                include_binary_file: false,
+                encrypt: false,
+            }],
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+
+        let report = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                dry_run: true,
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &CommandGit,
+        )
+        .unwrap();
+
+        assert!(!home.join(".config/generated/state.txt").exists());
+        assert!(
+            report
+                .actions
+                .iter()
+                .any(|action| action.starts_with("would run custom backup generated:"))
         );
     }
 

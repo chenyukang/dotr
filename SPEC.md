@@ -12,7 +12,8 @@ The core design is intentionally simpler than a full dotfiles manager:
 - No dependency on chezmoi, yadm, or a shell backup script.
 - No `dot_` or `private_` source filename encoding.
 - No templating in v0.
-- No package-manager backup in v0.
+- Package-manager and editor-extension inventories are supported only through
+  explicit `custom_backup` commands and generated files.
 - Copy-based backup by default, not symlink-based management.
 
 `dotr` should feel like: configure paths, run `dotr backup`, optionally run
@@ -124,8 +125,8 @@ If none of these resolves a repository, `dotr` fails with a message explaining
 how to pass `--repo` or set a default.
 
 `--with-defaults` may create a generic starter config with common shell, Git,
-SSH, GPG, editor, prompt, and terminal config paths. It must not include
-machine-specific personal paths.
+SSH, GPG, editor, prompt, terminal, Homebrew, and VS Code config paths. It must
+not include machine-specific personal paths.
 
 ```toml
 [[path]]
@@ -150,6 +151,7 @@ The full starter path set is:
 ~/.zprofile
 ~/.zshenv
 ~/.zshrc
+~/.zpreztorc
 ~/.inputrc
 ~/.editorconfig
 ~/.gitconfig
@@ -172,7 +174,39 @@ The full starter path set is:
 ~/.config/bat
 ~/.config/direnv
 ~/.cargo/config.toml
+~/.config/atuin
+~/.config/fastfetch
+~/.config/fresh
+~/.config/gh
+~/.config/gh-dash
+~/.config/jj
+~/.jjconfig.toml
+~/.config/karabiner
+~/.config/lvim
+~/.config/mise
+~/.config/openspeak
+~/.config/ripasso
+~/.config/yazi
+~/.config/zed
+~/.config/zellij
+~/.warp
+~/.hammerspoon
+~/.config/homebrew/Brewfile
+~/Library/Application Support/Code/User/settings.json
+~/Library/Application Support/Code/User/keybindings.json
+~/Library/Application Support/Code/User/tasks.json
+~/Library/Application Support/Code/User/snippets
+~/.config/Code/User/settings.json
+~/.config/Code/User/keybindings.json
+~/.config/Code/User/tasks.json
+~/.config/Code/User/snippets
+~/.config/vscode/extensions.txt
 ```
+
+Some starter paths are include-limited. For example, `~/.config/gh` includes
+`config.yml` but not `hosts.yml`. VS Code uses explicit user settings,
+keybindings, tasks, snippets, and generated extension-list paths instead of the
+whole `User` directory.
 
 ## Configuration
 
@@ -212,14 +246,22 @@ include_binary_file = true
 [[path]]
 src = "/Library/example/hello/world"
 
+[[custom_backup]]
+name = "homebrew"
+backup_command = "if command -v brew >/dev/null 2>&1; then mkdir -p ~/.config/homebrew && brew bundle dump --file ~/.config/homebrew/Brewfile --force; else echo 'dotr: skipping homebrew backup; brew not found' >&2; fi"
+restore_command = "if command -v brew >/dev/null 2>&1 && [ -f ~/.config/homebrew/Brewfile ]; then brew bundle --file ~/.config/homebrew/Brewfile; else echo 'dotr: skipping homebrew restore; brew or Brewfile not found' >&2; fi"
+
+[[custom_backup.path]]
+src = "~/.config/homebrew/Brewfile"
+
 [watch]
 enabled = true
 debounce_secs = 30
 min_backup_interval_secs = 900
 
 [daemon]
-stdout_log = "~/.local/state/dotr/dotr-watch.log"
-stderr_log = "~/.local/state/dotr/dotr-watch.err.log"
+log_path = "~/.local/state/dotr/dotr-watch.log"
+log_level = "info"
 
 [git]
 auto_commit = true
@@ -348,20 +390,22 @@ per-path allow rule in a later version. v0 does not need allow-rule overrides.
 Algorithm:
 
 1. Load `dotr.toml`.
-2. Resolve configured source paths.
-3. Walk files under each source path.
-4. Apply default and per-path excludes.
-5. Apply per-path includes.
-6. Skip binary files unless the path sets `include_binary_file = true`.
-7. Reject paths that cannot be mapped safely into `files`.
-8. Compare source files with current backup files.
-9. Copy changed or new files into `files`.
-10. Remove backed-up files whose source files disappeared, unless
+2. Run each configured `custom_backup.backup_command`, unless this is a dry run.
+3. Resolve configured source paths from both `[[path]]` and
+   `[[custom_backup.path]]`.
+4. Walk files under each source path.
+5. Apply default and per-path excludes.
+6. Apply per-path includes.
+7. Skip binary files unless the path sets `include_binary_file = true`.
+8. Reject paths that cannot be mapped safely into `files`.
+9. Compare source files with current backup files.
+10. Copy changed or new files into `files`.
+11. Remove backed-up files whose source files disappeared, unless
    `--no-delete` is set.
-11. Remove orphan files under `files/` that are not present in the current
+12. Remove orphan files under `files/` that are not present in the current
    metadata result, unless `--no-delete` is set.
-12. Write `metadata/index.json`.
-13. If files changed and Git auto-commit is enabled, commit and optionally push.
+13. Write `metadata/index.json`.
+14. If files changed and Git auto-commit is enabled, commit and optionally push.
 
 Comparison uses content hashing, not only mtime. Metadata-only changes are still
 recorded in `index.json` and should count as changes.
@@ -370,7 +414,12 @@ recorded in `index.json` and should count as changes.
 sources, checks deletions, writes metadata, and runs optional Git steps.
 
 `dotr backup --dry-run` prints planned additions, updates, deletions, encrypted
-updates, and Git actions without writing.
+updates, custom backup commands, and Git actions without writing.
+
+`[[custom_backup]]` is for generated inventories such as Homebrew `Brewfile`
+and VS Code extension lists. It may define `backup_command`, `restore_command`,
+and nested `[[custom_backup.path]]` entries. The nested paths use the same
+schema as top-level `[[path]]`.
 
 ## Add and remove behavior
 
@@ -505,6 +554,11 @@ dotr restore --apply ~/.config/nvim
 dotr restore --apply --allow-absolute /Library/example/hello/world
 ```
 
+After matching files are restored, `dotr restore --apply` runs matching
+`custom_backup.restore_command` entries. A custom restore command matches when
+no target filter is provided or when a target filter overlaps one of the
+custom backup paths. Dry-run restore prints the command without executing it.
+
 Absolute path restore follows the stricter path:
 
 - Backing up absolute paths is allowed.
@@ -556,17 +610,18 @@ Behavior:
 - `start` resolves the repository, writes dotr's own user-level daemon config,
   records the current executable path, and spawns `dotr --repo <repo> watch` in
   the background.
-- `start` reads `[daemon].stdout_log` and `[daemon].stderr_log` from
-  `dotr.toml`; omitted values default to `~/.local/state/dotr/dotr-watch.log`
-  and `~/.local/state/dotr/dotr-watch.err.log`.
+- `start` reads `[daemon].log_path` and `[daemon].log_level` from `dotr.toml`;
+  omitted values default to `~/.local/state/dotr/dotr-watch.log` and `info`.
 - `stop` reads the pid file and sends `SIGTERM`.
 - `status` reports whether the daemon config exists and whether the recorded
   pid is running.
 - v0 does not write systemd units, launchd plists, or other OS-specific service
   files.
 
-`~` in daemon log paths expands to the user's home directory. Relative daemon
-log paths resolve from the dotr repository root.
+Daemon logs are JSON Lines. `~` in daemon log paths expands to the user's home
+directory. Relative daemon log paths resolve from the dotr repository root.
+`log_level` supports `error`, `warn`, `info`, `debug`, and `trace`. stdout and
+stderr both append to the same `log_path`.
 
 ## Git behavior
 
@@ -645,8 +700,9 @@ v0 is successful when all of these are true:
    `files/home`, `files/absolute`, and
    `metadata/index.json`.
 2. `dotr init` does not migrate or rewrite any existing dotfiles/chezmoi layout.
-3. A starter config contains common shell, Git, SSH, editor, prompt, and
-   terminal paths, and does not contain machine-specific personal paths.
+3. A starter config contains common shell, Git, SSH, editor, prompt, terminal,
+   Homebrew, and VS Code paths, and does not contain machine-specific personal
+   paths.
 4. A config with `/Library/example/hello/world` maps to
    `files/absolute/Library/example/hello/world`.
 5. Excluded files are not copied.
@@ -664,7 +720,9 @@ v0 is successful when all of these are true:
 13. `dotr watch` ignores backup repository changes unless explicitly configured
     to watch the repository.
 14. A backup repository containing `AGE-SECRET-KEY-1` fails `dotr doctor`.
-15. Tests cover init, home-relative mapping, absolute mapping, excludes,
+15. Custom backup commands can generate package/editor inventories before
+    backup and can run restore commands after matching files are restored.
+16. Tests cover init, home-relative mapping, absolute mapping, excludes,
     deletion, encryption, symlink handling, watch debounce, and dry-run restore
     safety.
 
@@ -674,8 +732,6 @@ v0 is successful when all of these are true:
 - yadm compatibility.
 - Migrating the current dotfiles repository layout.
 - Template rendering.
-- Package manager backup.
-- VS Code extension backup.
 - Browser/application state backup.
 - Conflict resolution UI.
 - Cross-machine profile transforms.

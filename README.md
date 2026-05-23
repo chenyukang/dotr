@@ -155,14 +155,22 @@ src = "~/.gitconfig"
 src = "~/.config/some-app/token.json"
 encrypt = true
 
+[[custom_backup]]
+name = "homebrew"
+backup_command = "if command -v brew >/dev/null 2>&1; then mkdir -p ~/.config/homebrew && brew bundle dump --file ~/.config/homebrew/Brewfile --force; else echo 'dotr: skipping homebrew backup; brew not found' >&2; fi"
+restore_command = "if command -v brew >/dev/null 2>&1 && [ -f ~/.config/homebrew/Brewfile ]; then brew bundle --file ~/.config/homebrew/Brewfile; else echo 'dotr: skipping homebrew restore; brew or Brewfile not found' >&2; fi"
+
+[[custom_backup.path]]
+src = "~/.config/homebrew/Brewfile"
+
 [watch]
 enabled = true
 debounce_secs = 30
 min_backup_interval_secs = 900
 
 [daemon]
-stdout_log = "~/.local/state/dotr/dotr-watch.log"
-stderr_log = "~/.local/state/dotr/dotr-watch.err.log"
+log_path = "~/.local/state/dotr/dotr-watch.log"
+log_level = "info"
 
 [git]
 auto_commit = true
@@ -218,6 +226,34 @@ src = "~/.config/some-linked-app"
 follow_symlink = false
 ```
 
+For generated inventories such as Homebrew packages or VS Code extensions, use
+`[[custom_backup]]`. During `dotr backup`, `backup_command` runs before the
+listed `custom_backup.path` entries are scanned. During `dotr restore --apply`,
+`restore_command` runs after matching files are restored. Dry runs print the
+commands without executing them.
+
+```toml
+[[custom_backup]]
+name = "vscode"
+backup_command = "if command -v code >/dev/null 2>&1; then mkdir -p ~/.config/vscode && code --list-extensions > ~/.config/vscode/extensions.txt; else echo 'dotr: skipping VS Code extension backup; code not found' >&2; fi"
+restore_command = "if command -v code >/dev/null 2>&1 && [ -f ~/.config/vscode/extensions.txt ]; then xargs -n 1 code --install-extension < ~/.config/vscode/extensions.txt; else echo 'dotr: skipping VS Code extension restore; code or extensions.txt not found' >&2; fi"
+
+[[custom_backup.path]]
+src = "~/Library/Application Support/Code/User/settings.json"
+
+[[custom_backup.path]]
+src = "~/Library/Application Support/Code/User/keybindings.json"
+
+[[custom_backup.path]]
+src = "~/Library/Application Support/Code/User/tasks.json"
+
+[[custom_backup.path]]
+src = "~/Library/Application Support/Code/User/snippets"
+
+[[custom_backup.path]]
+src = "~/.config/vscode/extensions.txt"
+```
+
 ## Commands
 
 Initialize a repo:
@@ -227,9 +263,9 @@ dotr init [TARGET] [--with-defaults] [--no-git] [--force] [--set-default]
 ```
 
 `--with-defaults` writes a generic starter `dotr.toml` for common shell, Git,
-SSH, GPG, editor, prompt, and terminal config paths. It is intentionally
-conservative: it does not include broad application state directories or
-machine-specific personal paths.
+SSH, GPG, editor, prompt, terminal, Homebrew, and VS Code config paths. It is
+intentionally conservative: it does not include broad application state
+directories or machine-specific personal paths.
 
 ```toml
 [[path]]
@@ -258,6 +294,7 @@ Current starter paths:
 ~/.zprofile
 ~/.zshenv
 ~/.zshrc
+~/.zpreztorc
 ~/.inputrc
 ~/.editorconfig
 ~/.gitconfig
@@ -280,7 +317,39 @@ Current starter paths:
 ~/.config/bat
 ~/.config/direnv
 ~/.cargo/config.toml
+~/.config/atuin
+~/.config/fastfetch
+~/.config/fresh
+~/.config/gh
+~/.config/gh-dash
+~/.config/jj
+~/.jjconfig.toml
+~/.config/karabiner
+~/.config/lvim
+~/.config/mise
+~/.config/openspeak
+~/.config/ripasso
+~/.config/yazi
+~/.config/zed
+~/.config/zellij
+~/.warp
+~/.hammerspoon
+~/.config/homebrew/Brewfile
+~/Library/Application Support/Code/User/settings.json
+~/Library/Application Support/Code/User/keybindings.json
+~/Library/Application Support/Code/User/tasks.json
+~/Library/Application Support/Code/User/snippets
+~/.config/Code/User/settings.json
+~/.config/Code/User/keybindings.json
+~/.config/Code/User/tasks.json
+~/.config/Code/User/snippets
+~/.config/vscode/extensions.txt
 ```
+
+Some starter entries use `include` rules. For example, `~/.config/gh` backs up
+`config.yml` but avoids `hosts.yml`. VS Code backs up explicit user settings,
+keybindings, tasks, snippets, and the generated extension list instead of the
+whole `User` directory.
 
 Run one backup pass:
 
@@ -339,20 +408,23 @@ Daemon logs default to:
 
 ```text
 ~/.local/state/dotr/dotr-watch.log
-~/.local/state/dotr/dotr-watch.err.log
 ```
 
-Override them in `dotr.toml`:
+Override the path and level in `dotr.toml`:
 
 ```toml
 [daemon]
-stdout_log = "~/.local/state/dotr/watch.log"
-stderr_log = "logs/watch.err.log"
+log_path = "~/.local/state/dotr/dotr-watch.log"
+log_level = "info"
 ```
 
 `~` expands to the user's home directory. Relative paths are resolved from the
 dotr repository root. After changing these paths, restart the daemon with
 `dotr daemon stop` and `dotr daemon start`.
+
+`log_level` supports `error`, `warn`, `info`, `debug`, and `trace`. The daemon
+redirects both stdout and stderr to the same `log_path`, so structured dotr logs
+and unexpected process output stay together.
 
 Check the repository and config:
 
