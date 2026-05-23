@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::{
-    config::{CONFIG_FILE_NAME, Config, DEFAULT_STORE_DIR, config_path},
+    config::{Config, DEFAULT_STORE_DIR, config_path},
     git::{CommandGit, GitBackend, is_git_repo},
     index::Index,
 };
@@ -92,9 +92,9 @@ fn ensure_gitignore(repo_root: &Path) -> Result<()> {
     let path = repo_root.join(".gitignore");
     let additions = [
         "# dotr runtime files",
-        "backup/*.lock",
-        "backup/*.tmp",
-        "backup/*.log",
+        ".dotr/*.lock",
+        ".dotr/*.tmp",
+        ".dotr/*.log",
     ];
 
     let existing = fs::read_to_string(&path).unwrap_or_default();
@@ -116,11 +116,6 @@ fn ensure_gitignore(repo_root: &Path) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-fn config_file_name() -> &'static str {
-    CONFIG_FILE_NAME
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,12 +134,38 @@ mod tests {
         let report = run(&options).unwrap();
 
         assert!(!report.initialized_git);
-        assert!(report.repo_root.join("backup/dotr.toml").exists());
-        assert!(report.repo_root.join("backup/files/home").is_dir());
-        assert!(report.repo_root.join("backup/files/absolute").is_dir());
-        assert!(report.repo_root.join("backup/metadata/index.json").exists());
+        assert!(report.repo_root.join("dotr.toml").exists());
+        assert!(report.repo_root.join("files/home").is_dir());
+        assert!(report.repo_root.join("files/absolute").is_dir());
+        assert!(report.repo_root.join("metadata/index.json").exists());
+        assert!(!report.repo_root.join("backup").exists());
 
         let config = Config::load(&report.repo_root).unwrap();
-        assert_eq!(config.paths.len(), 4);
+        assert!(config.paths.len() > 10);
+        assert!(config.paths.iter().any(|path| path.src == "~/.zshrc"));
+        assert!(config.paths.iter().any(|path| path.src == "~/.config/nvim"));
+
+        let toml = fs::read_to_string(report.repo_root.join("dotr.toml")).unwrap();
+        assert!(!toml.contains("include = []"));
+        assert!(!toml.contains("exclude = []"));
+        assert!(!toml.contains("follow_symlink = true"));
+        assert!(!toml.contains("encrypt = false"));
+        assert!(!toml.contains("include_binary_file = false"));
+    }
+
+    #[test]
+    fn init_without_defaults_omits_empty_path_array() {
+        let dir = tempdir().unwrap();
+        let options = InitOptions {
+            target: dir.path().join("repo"),
+            with_defaults: false,
+            no_git: true,
+            force: false,
+        };
+
+        let report = run(&options).unwrap();
+        let toml = fs::read_to_string(report.repo_root.join("dotr.toml")).unwrap();
+
+        assert!(!toml.contains("path = []"));
     }
 }

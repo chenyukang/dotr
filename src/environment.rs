@@ -58,12 +58,12 @@ mod tests {
 
         assert_eq!(env.expand_tilde("~"), PathBuf::from("/tmp/home"));
         assert_eq!(
-            env.expand_tilde("~/code/bin"),
-            PathBuf::from("/tmp/home/code/bin")
+            env.expand_tilde("~/projects/bin"),
+            PathBuf::from("/tmp/home/projects/bin")
         );
         assert_eq!(
-            env.display_source(Path::new("/tmp/home/.codex/AGENTS.md")),
-            "~/.codex/AGENTS.md"
+            env.display_source(Path::new("/tmp/home/.config/nvim/init.lua")),
+            "~/.config/nvim/init.lua"
         );
     }
 }

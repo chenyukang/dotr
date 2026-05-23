@@ -28,13 +28,13 @@ impl GitBackend for CommandGit {
     ) -> Result<()> {
         if !include_unrelated && has_unrelated_changes(repo_root)? {
             bail!(
-                "repository has changes outside backup/; refusing to auto-commit unrelated files"
+                "repository has changes outside dotr managed paths; refusing to auto-commit unrelated files"
             );
         }
 
-        run_git(repo_root, ["add", "backup"])?;
+        add_managed_paths(repo_root)?;
 
-        if !has_backup_changes(repo_root)? {
+        if !has_managed_changes(repo_root)? {
             return Ok(());
         }
 
@@ -50,8 +50,20 @@ pub fn is_git_repo(repo_root: &Path) -> bool {
     repo_root.join(".git").exists()
 }
 
-pub fn has_backup_changes(repo_root: &Path) -> Result<bool> {
-    let output = git_output(repo_root, ["status", "--porcelain", "--", "backup"])?;
+pub fn has_managed_changes(repo_root: &Path) -> Result<bool> {
+    let output = git_output(
+        repo_root,
+        [
+            "status",
+            "--porcelain",
+            "--",
+            "dotr.toml",
+            "files",
+            "metadata",
+            "recipients.txt",
+            ".gitignore",
+        ],
+    )?;
     Ok(!output.trim().is_empty())
 }
 
@@ -59,7 +71,31 @@ pub fn has_unrelated_changes(repo_root: &Path) -> Result<bool> {
     let output = git_output(repo_root, ["status", "--porcelain"])?;
     Ok(output
         .lines()
-        .any(|line| !line.get(3..).unwrap_or("").starts_with("backup/")))
+        .any(|line| !is_managed_status_path(line.get(3..).unwrap_or(""))))
+}
+
+fn add_managed_paths(repo_root: &Path) -> Result<()> {
+    for path in [
+        "dotr.toml",
+        "files",
+        "metadata",
+        "recipients.txt",
+        ".gitignore",
+    ] {
+        if repo_root.join(path).exists() {
+            run_git(repo_root, ["add", path])?;
+        }
+    }
+
+    Ok(())
+}
+
+fn is_managed_status_path(path: &str) -> bool {
+    path == "dotr.toml"
+        || path == "recipients.txt"
+        || path == ".gitignore"
+        || path.starts_with("files/")
+        || path.starts_with("metadata/")
 }
 
 fn run_git<const N: usize>(repo_root: &Path, args: [&str; N]) -> Result<()> {
@@ -90,4 +126,22 @@ fn git_output<const N: usize>(repo_root: &Path, args: [&str; N]) -> Result<Strin
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_only_dotr_managed_status_paths() {
+        assert!(is_managed_status_path("dotr.toml"));
+        assert!(is_managed_status_path(".gitignore"));
+        assert!(is_managed_status_path("files/home/.config/nvim/init.lua"));
+        assert!(is_managed_status_path("metadata/index.json"));
+        assert!(is_managed_status_path("recipients.txt"));
+
+        assert!(!is_managed_status_path("README.md"));
+        assert!(!is_managed_status_path("src/main.rs"));
+        assert!(!is_managed_status_path("backup/dotr.toml"));
+    }
 }

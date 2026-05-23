@@ -97,12 +97,12 @@ mod tests {
     #[test]
     fn writes_and_reads_index() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("backup/metadata/index.json");
+        let path = dir.path().join("metadata/index.json");
         let index = Index {
             version: 1,
             entries: vec![IndexEntry {
-                source: "~/.codex/AGENTS.md".to_string(),
-                stored: "files/home/.codex/AGENTS.md".to_string(),
+                source: "~/.config/nvim/init.lua".to_string(),
+                stored: "files/home/.config/nvim/init.lua".to_string(),
                 kind: EntryKind::File,
                 sha256: Some("abc".to_string()),
                 mode: Some(0o644),

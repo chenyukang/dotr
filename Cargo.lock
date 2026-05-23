@@ -347,6 +347,7 @@ dependencies = [
  "clap",
  "globset",
  "hex",
+ "libc",
  "notify",
  "serde",
  "serde_json",

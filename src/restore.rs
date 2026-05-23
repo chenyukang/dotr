@@ -274,7 +274,7 @@ mod tests {
         })
         .unwrap();
         fs::write(
-            repo.path().join("backup/dotr.toml"),
+            repo.path().join("dotr.toml"),
             toml::to_string_pretty(config).unwrap(),
         )
         .unwrap();
@@ -286,13 +286,16 @@ mod tests {
     fn dry_run_restore_does_not_write() {
         let home_dir = tempdir().unwrap();
         let home = home_dir.path();
-        fs::create_dir_all(home.join(".codex")).unwrap();
-        fs::write(home.join(".codex/AGENTS.md"), "rules").unwrap();
+        fs::create_dir_all(home.join(".config/nvim")).unwrap();
+        fs::write(home.join(".config/nvim/init.lua"), "rules").unwrap();
 
         let mut config = Config::default();
         config.paths.push(PathConfig {
-            src: "~/.codex".to_string(),
+            src: "~/.config/nvim".to_string(),
+            include: Vec::new(),
             exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
             encrypt: false,
         });
         let repo = prepare_repo(home, &config);
@@ -308,7 +311,7 @@ mod tests {
             &crate::git::CommandGit,
         )
         .unwrap();
-        fs::remove_file(home.join(".codex/AGENTS.md")).unwrap();
+        fs::remove_file(home.join(".config/nvim/init.lua")).unwrap();
 
         let report = run_with_config(
             repo.path(),
@@ -323,27 +326,33 @@ mod tests {
         .unwrap();
 
         assert!(report.planned > 0);
-        assert!(!home.join(".codex/AGENTS.md").exists());
+        assert!(!home.join(".config/nvim/init.lua").exists());
     }
 
     #[test]
     fn scoped_restore_only_restores_matching_target() {
         let home_dir = tempdir().unwrap();
         let home = home_dir.path();
-        fs::create_dir_all(home.join(".codex")).unwrap();
-        fs::create_dir_all(home.join(".agents")).unwrap();
-        fs::write(home.join(".codex/AGENTS.md"), "codex").unwrap();
-        fs::write(home.join(".agents/AGENTS.md"), "agents").unwrap();
+        fs::create_dir_all(home.join(".config/nvim")).unwrap();
+        fs::create_dir_all(home.join(".config/fish")).unwrap();
+        fs::write(home.join(".config/nvim/init.lua"), "nvim").unwrap();
+        fs::write(home.join(".config/fish/config.fish"), "fish").unwrap();
 
         let mut config = Config::default();
         config.paths.push(PathConfig {
-            src: "~/.codex".to_string(),
+            src: "~/.config/nvim".to_string(),
+            include: Vec::new(),
             exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
             encrypt: false,
         });
         config.paths.push(PathConfig {
-            src: "~/.agents".to_string(),
+            src: "~/.config/fish".to_string(),
+            include: Vec::new(),
             exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
             encrypt: false,
         });
         let repo = prepare_repo(home, &config);
@@ -360,8 +369,8 @@ mod tests {
             &crate::git::CommandGit,
         )
         .unwrap();
-        fs::remove_file(home.join(".codex/AGENTS.md")).unwrap();
-        fs::remove_file(home.join(".agents/AGENTS.md")).unwrap();
+        fs::remove_file(home.join(".config/nvim/init.lua")).unwrap();
+        fs::remove_file(home.join(".config/fish/config.fish")).unwrap();
 
         run_with_config(
             repo.path(),
@@ -369,17 +378,17 @@ mod tests {
             &config,
             &RestoreOptions {
                 apply: true,
-                targets: vec!["~/.codex".to_string()],
+                targets: vec!["~/.config/nvim".to_string()],
                 ..RestoreOptions::default()
             },
         )
         .unwrap();
 
         assert_eq!(
-            fs::read_to_string(home.join(".codex/AGENTS.md")).unwrap(),
-            "codex"
+            fs::read_to_string(home.join(".config/nvim/init.lua")).unwrap(),
+            "nvim"
         );
-        assert!(!home.join(".agents/AGENTS.md").exists());
+        assert!(!home.join(".config/fish/config.fish").exists());
     }
 
     #[test]
@@ -393,7 +402,10 @@ mod tests {
         let mut config = Config::default();
         config.paths.push(PathConfig {
             src: source.to_string_lossy().into_owned(),
+            include: Vec::new(),
             exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
             encrypt: false,
         });
         let repo = prepare_repo(home_dir.path(), &config);
@@ -446,7 +458,7 @@ mod tests {
         .unwrap();
         let identity = age::x25519::Identity::generate();
         fs::write(
-            repo.path().join("backup/recipients.txt"),
+            repo.path().join("recipients.txt"),
             identity.to_public().to_string(),
         )
         .unwrap();
@@ -454,15 +466,18 @@ mod tests {
         fs::write(&identity_path, identity.to_string().expose_secret()).unwrap();
 
         let mut config = Config::default();
-        config.encryption.recipients_file = Some("backup/recipients.txt".to_string());
+        config.encryption.recipients_file = Some("recipients.txt".to_string());
         config.encryption.identity = Some(identity_path.to_string_lossy().into_owned());
         config.paths.push(PathConfig {
             src: "~/.config/app/token.json".to_string(),
+            include: Vec::new(),
             exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
             encrypt: true,
         });
         fs::write(
-            repo.path().join("backup/dotr.toml"),
+            repo.path().join("dotr.toml"),
             toml::to_string_pretty(&config).unwrap(),
         )
         .unwrap();
@@ -509,7 +524,10 @@ mod tests {
         let mut config = Config::default();
         config.paths.push(PathConfig {
             src: "~/links".to_string(),
+            include: Vec::new(),
             exclude: Vec::new(),
+            follow_symlink: false,
+            include_binary_file: false,
             encrypt: false,
         });
         let repo = prepare_repo(home, &config);

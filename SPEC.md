@@ -32,45 +32,43 @@ The core design is intentionally simpler than a full dotfiles manager:
 
 ## Repository layout
 
-The repository stores `dotr` data under one directory:
+The repository stores `dotr` data directly at the repository root:
 
 ```text
-backup/
-  dotr.toml
-  files/
-    home/
-      .codex/
-        AGENTS.md
-      code/
-        bin/
-          restart-codex.sh
-    absolute/
-      Library/
-        example/
-          hello/
-            world
-  metadata/
-    index.json
+dotr.toml
+files/
+  home/
+    .zshrc
+    .config/
+      nvim/
+        init.lua
+  absolute/
+    Library/
+      example/
+        hello/
+          world
+metadata/
+  index.json
 ```
 
 Path mapping is direct and reversible:
 
 ```text
-~/.codex/AGENTS.md
-=> backup/files/home/.codex/AGENTS.md
+~/.zshrc
+=> files/home/.zshrc
 
-~/code/bin/restart-codex.sh
-=> backup/files/home/code/bin/restart-codex.sh
+~/.config/nvim/init.lua
+=> files/home/.config/nvim/init.lua
 
 /Library/example/hello/world
-=> backup/files/absolute/Library/example/hello/world
+=> files/absolute/Library/example/hello/world
 ```
 
-`backup/files/home` maps to `$HOME`.
+`files/home` maps to `$HOME`.
 
-`backup/files/absolute` maps to `/`.
+`files/absolute` maps to `/`.
 
-`backup/metadata/index.json` stores metadata that cannot be represented reliably
+`metadata/index.json` stores metadata that cannot be represented reliably
 by copied file contents alone.
 
 ## Initialization
@@ -84,6 +82,7 @@ Examples:
 dotr init ~/code/dotbackup
 dotr init . --with-defaults
 dotr init . --no-git
+dotr init ~/dotbackup --with-defaults --set-default
 ```
 
 Behavior:
@@ -91,55 +90,124 @@ Behavior:
 1. If the target directory does not exist, create it.
 2. If the target directory is not a Git repository and `--no-git` is not set,
    run `git init`.
-3. Create `backup/dotr.toml` unless it already exists.
-4. Create `backup/files/home`, `backup/files/absolute`, and `backup/metadata`.
-5. Create an empty `backup/metadata/index.json`.
-6. Create `backup/recipients.txt` when encryption is enabled.
+3. Create `dotr.toml` unless it already exists.
+4. Create `files/home`, `files/absolute`, and `metadata`.
+5. Create an empty `metadata/index.json`.
+6. Create `recipients.txt` when encryption is enabled.
 7. Create or update a conservative `.gitignore` for dotr lock files, temp files,
-   and logs, without ignoring `backup/files`.
+   and logs, without ignoring `files`.
 
 `dotr init` must not migrate the current dotfiles repository layout in v0. It
-creates a fresh `backup/` tree and leaves any existing chezmoi, yadm, or custom
+creates a fresh `dotr.toml`, `files/`, and `metadata/` layout and leaves any existing chezmoi, yadm, or custom
 dotfiles structure untouched.
 
-`--with-defaults` may create a starter config for this machine:
+`--set-default` writes a machine-local user config at
+`~/.config/dotr/config.toml`:
+
+```toml
+default_repo = "/Users/alice/dotbackup"
+```
+
+The user config is not committed to the backup repository.
+
+## Repository discovery
+
+Commands that operate on an existing repository resolve the repository in this
+order:
+
+1. `--repo` or `-C`.
+2. `DOTR_REPO`.
+3. Walk upward from the current directory until `dotr.toml` is found.
+4. `default_repo` in `~/.config/dotr/config.toml`.
+
+If none of these resolves a repository, `dotr` fails with a message explaining
+how to pass `--repo` or set a default.
+
+`--with-defaults` may create a generic starter config with common shell, Git,
+SSH, GPG, editor, prompt, and terminal config paths. It must not include
+machine-specific personal paths.
 
 ```toml
 [[path]]
-src = "~/.codex"
+src = "~/.zshrc"
 
 [[path]]
-src = "~/.agents"
+src = "~/.gitconfig"
 
 [[path]]
-src = "~/.hermes"
+src = "~/.ssh/config"
 
 [[path]]
-src = "~/code/bin"
+src = "~/.config/nvim"
+```
+
+The full starter path set is:
+
+```text
+~/.bash_profile
+~/.bashrc
+~/.profile
+~/.zprofile
+~/.zshenv
+~/.zshrc
+~/.inputrc
+~/.editorconfig
+~/.gitconfig
+~/.gitignore_global
+~/.ssh/config
+~/.gnupg/gpg.conf
+~/.gnupg/gpg-agent.conf
+~/.tmux.conf
+~/.vimrc
+~/.ideavimrc
+~/.config/git
+~/.config/fish
+~/.config/nvim
+~/.config/helix
+~/.config/starship.toml
+~/.config/alacritty
+~/.config/ghostty
+~/.config/kitty
+~/.config/wezterm
+~/.config/bat
+~/.config/direnv
+~/.cargo/config.toml
 ```
 
 ## Configuration
 
-`backup/dotr.toml` is committed to the repository.
+`dotr.toml` is committed to the repository.
 
 Example:
 
 ```toml
 [repository]
 root = "/Users/yukang/code/dotfiles"
-store = "backup"
+store = "."
 
 [[path]]
-src = "~/.codex"
+src = "~/.zshrc"
 
 [[path]]
-src = "~/.agents"
+src = "~/.gitconfig"
 
 [[path]]
-src = "~/.hermes"
+src = "~/.ssh/config"
 
 [[path]]
-src = "~/code/bin"
+src = "~/.config/nvim"
+include = [
+  "init.lua",
+  "lua/**",
+]
+
+[[path]]
+src = "~/.config/some-app"
+include = [
+  "config.toml",
+  "assets/**",
+]
+include_binary_file = true
 
 [[path]]
 src = "/Library/example/hello/world"
@@ -149,6 +217,10 @@ enabled = true
 debounce_secs = 30
 min_backup_interval_secs = 900
 
+[daemon]
+stdout_log = "~/.local/state/dotr/dotr-watch.log"
+stderr_log = "~/.local/state/dotr/dotr-watch.err.log"
+
 [git]
 auto_commit = true
 auto_push = true
@@ -156,7 +228,7 @@ commit_message = "chore(dotr): automated backup"
 
 [encryption]
 backend = "age"
-recipients_file = "backup/recipients.txt"
+recipients_file = "recipients.txt"
 identity = "~/.config/dotr/age.key"
 
 [policy]
@@ -173,12 +245,28 @@ Each configured `[[path]]` may add local include/exclude rules:
 ```toml
 [[path]]
 src = "~/.codex"
+include = [
+  "AGENTS.md",
+  "RTK.md",
+  "config.toml",
+  "rules/**",
+  "skills/**",
+]
 exclude = [
-  "**/sessions/**",
-  "**/logs/**",
-  "**/plugins/cache/**",
+  "skills/.system/**",
 ]
 ```
+
+`include` patterns are relative to `src`. When `include` is present, only
+matching files are stored; directories are traversed but not stored as metadata
+entries. If `follow_symlink = false`, matching symlinks are stored as symlink
+metadata.
+
+Binary files are skipped by default. A path can opt in with
+`include_binary_file = true` when binary assets are intentional. Include and
+exclude rules still apply before the binary-file policy, so the recommended
+shape for mixed application directories is a narrow `include` list plus this
+binary opt-in.
 
 Global default excludes are always applied:
 
@@ -186,17 +274,67 @@ Global default excludes are always applied:
 **/.git/**
 **/.DS_Store
 **/__pycache__/**
+**/.cache/**
+**/cache
+**/cache/**
+**/caches
+**/caches/**
+**/.tmp/**
+**/tmp
+**/tmp/**
+**/temp
+**/temp/**
+**/log
+**/log/**
+**/logs
+**/logs/**
+**/sessions
+**/sessions/**
+**/archived_sessions
+**/archived_sessions/**
+**/browser/sessions
+**/browser/sessions/**
+**/shell_snapshots
+**/shell_snapshots/**
+**/worktrees
+**/worktrees/**
+**/targets
+**/targets/**
+**/target
+**/target/**
+**/generated_images
+**/generated_images/**
+**/ambient-suggestions
+**/ambient-suggestions/**
+**/node_repl
+**/node_repl/**
+**/vendor_imports
+**/vendor_imports/**
+**/plugins/cache
+**/plugins/cache/**
 **/node_modules/**
 **/.venv/**
 **/venv/**
 **/.env
 **/.env.*
+**/auth.json
+**/credentials.json
 **/*.pem
 **/*.key
 **/*.db
 **/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3
+**/*.sqlite3-*
 **/*.log
 **/*.pyc
+**/*.tmp
+**/*.tmp-*
+**/.*.tmp-*
+**/*.bak
+**/*.bak.*
+**/.*.bak
+**/.*.bak*
 **/references/llms*.md
 ```
 
@@ -209,23 +347,41 @@ per-path allow rule in a later version. v0 does not need allow-rule overrides.
 
 Algorithm:
 
-1. Load `backup/dotr.toml`.
+1. Load `dotr.toml`.
 2. Resolve configured source paths.
 3. Walk files under each source path.
 4. Apply default and per-path excludes.
-5. Reject paths that cannot be mapped safely into `backup/files`.
-6. Compare source files with current backup files.
-7. Copy changed or new files into `backup/files`.
-8. Remove backed-up files whose source files disappeared, unless
+5. Apply per-path includes.
+6. Skip binary files unless the path sets `include_binary_file = true`.
+7. Reject paths that cannot be mapped safely into `files`.
+8. Compare source files with current backup files.
+9. Copy changed or new files into `files`.
+10. Remove backed-up files whose source files disappeared, unless
    `--no-delete` is set.
-9. Write `backup/metadata/index.json`.
-10. If files changed and Git auto-commit is enabled, commit and optionally push.
+11. Remove orphan files under `files/` that are not present in the current
+   metadata result, unless `--no-delete` is set.
+12. Write `metadata/index.json`.
+13. If files changed and Git auto-commit is enabled, commit and optionally push.
 
 Comparison uses content hashing, not only mtime. Metadata-only changes are still
 recorded in `index.json` and should count as changes.
 
+`dotr backup` prints progress updates to stderr while it scans configured
+sources, checks deletions, writes metadata, and runs optional Git steps.
+
 `dotr backup --dry-run` prints planned additions, updates, deletions, encrypted
 updates, and Git actions without writing.
+
+## Add and remove behavior
+
+`dotr add PATH` resolves `PATH` relative to the current directory, writes a new
+`[[path]]` entry to `dotr.toml` if it is not already configured, and then runs
+one backup pass. Paths under `$HOME` are stored in config with `~`.
+
+`dotr remove PATH` removes the matching configured `[[path]]` entry from
+`dotr.toml` and then runs one backup pass with deletion enabled, so entries that
+are no longer covered by config are removed from `files/` and
+`metadata/index.json`.
 
 ## Metadata
 
@@ -236,8 +392,8 @@ updates, and Git actions without writing.
   "version": 1,
   "entries": [
     {
-      "source": "~/.codex/AGENTS.md",
-      "stored": "files/home/.codex/AGENTS.md",
+      "source": "~/.zshrc",
+      "stored": "files/home/.zshrc",
       "kind": "file",
       "sha256": "...",
       "mode": 420,
@@ -260,9 +416,24 @@ for v0.
 
 ## Symlinks
 
-`dotr` must not blindly follow symlinks.
+`dotr` follows symlinks by default because its backup model is copy-based.
 
 Default behavior:
+
+- Follow symlinks and store the target contents at the symlink path.
+- Follow symlinked directories during traversal.
+- Apply the same include, exclude, size, binary, and encryption policies to the
+  followed target contents.
+
+Per-path opt-out:
+
+```toml
+[[path]]
+src = "~/.config/some-linked-app"
+follow_symlink = false
+```
+
+When `follow_symlink = false`:
 
 - Back up symlinks as symlink metadata, not as target file contents.
 - Store the symlink target in `index.json`.
@@ -270,8 +441,6 @@ Default behavior:
 
 Safety rules:
 
-- A symlink inside a configured source must not cause `dotr` to read files outside
-  the configured source unless a future explicit `follow_symlinks = true` exists.
 - Restore must not follow an existing destination symlink and overwrite its target.
   It should replace the symlink itself only after showing the action in dry-run.
 
@@ -295,7 +464,7 @@ Encrypted files are stored with an `.age` suffix:
 
 ```text
 ~/.config/some-app/token.json
-=> backup/files/home/.config/some-app/token.json.age
+=> files/home/.config/some-app/token.json.age
 ```
 
 The plaintext path remains in `index.json`, but plaintext content does not.
@@ -316,7 +485,7 @@ It must not store plaintext hashes for encrypted files.
 
 ## Restore behavior
 
-`dotr restore` restores from `backup/files` to the original paths.
+`dotr restore` restores from `files` to the original paths.
 
 Default restore is conservative:
 
@@ -332,7 +501,7 @@ Restore examples:
 
 ```text
 dotr restore --dry-run
-dotr restore --apply ~/.codex
+dotr restore --apply ~/.config/nvim
 dotr restore --apply --allow-absolute /Library/example/hello/world
 ```
 
@@ -344,8 +513,8 @@ Absolute path restore follows the stricter path:
 
 Path traversal protection is mandatory:
 
-- Stored paths must normalize under `backup/files/home` or
-  `backup/files/absolute`.
+- Stored paths must normalize under `files/home` or
+  `files/absolute`.
 - `..` components in stored paths are invalid.
 - Restore must not write outside `$HOME` or `/` mapping roots because of symlink
   traversal.
@@ -369,6 +538,35 @@ repository is explicitly listed as a source path.
 
 `dotr watch` should be boring. It should never restore, never prompt, and never
 make policy decisions not already present in config.
+
+## Daemon mode
+
+`dotr daemon` is the portable wrapper around `dotr watch`.
+
+Commands:
+
+```text
+dotr daemon start
+dotr daemon stop
+dotr daemon status
+```
+
+Behavior:
+
+- `start` resolves the repository, writes dotr's own user-level daemon config,
+  records the current executable path, and spawns `dotr --repo <repo> watch` in
+  the background.
+- `start` reads `[daemon].stdout_log` and `[daemon].stderr_log` from
+  `dotr.toml`; omitted values default to `~/.local/state/dotr/dotr-watch.log`
+  and `~/.local/state/dotr/dotr-watch.err.log`.
+- `stop` reads the pid file and sends `SIGTERM`.
+- `status` reports whether the daemon config exists and whether the recorded
+  pid is running.
+- v0 does not write systemd units, launchd plists, or other OS-specific service
+  files.
+
+`~` in daemon log paths expands to the user's home directory. Relative daemon
+log paths resolve from the dotr repository root.
 
 ## Git behavior
 
@@ -404,11 +602,21 @@ Initial commands:
 
 ```text
 dotr init
+dotr init [TARGET] [--set-default]
+dotr --repo ~/dotbackup backup
+dotr -C ~/dotbackup status
+dotr add ~/.config/yazi
+dotr remove ~/.config/yazi
 dotr backup [--dry-run] [--no-delete] [--no-git] [--commit] [--push]
 dotr status
 dotr restore [--dry-run] [--apply] [--force] [--allow-absolute] [PATH...]
 dotr watch
+dotr daemon start
+dotr daemon stop
+dotr daemon status
 dotr doctor
+dotr repo
+dotr config set default_repo ~/dotbackup
 ```
 
 `dotr status` reports:
@@ -433,22 +641,23 @@ dotr doctor
 
 v0 is successful when all of these are true:
 
-1. `dotr init` creates a Git repository, `backup/dotr.toml`,
-   `backup/files/home`, `backup/files/absolute`, and
-   `backup/metadata/index.json`.
+1. `dotr init` creates a Git repository, `dotr.toml`,
+   `files/home`, `files/absolute`, and
+   `metadata/index.json`.
 2. `dotr init` does not migrate or rewrite any existing dotfiles/chezmoi layout.
-3. A config with `~/.codex`, `~/.agents`, `~/.hermes`, and `~/code/bin` backs up
-   to `backup/files/home/...` without chezmoi.
+3. A starter config contains common shell, Git, SSH, editor, prompt, and
+   terminal paths, and does not contain machine-specific personal paths.
 4. A config with `/Library/example/hello/world` maps to
-   `backup/files/absolute/Library/example/hello/world`.
+   `files/absolute/Library/example/hello/world`.
 5. Excluded files are not copied.
 6. Re-running `dotr backup` with no source changes produces no file changes and
    no commit.
 7. Editing a managed file causes exactly that stored file and metadata to change.
-8. An encrypted path stores only `.age` content in `backup/files` and can be
+8. An encrypted path stores only `.age` content in `files` and can be
    restored with the configured age identity.
 9. `dotr restore --dry-run` shows intended actions without writing.
-10. `dotr restore --apply ~/.codex` restores only paths under `~/.codex`.
+10. `dotr restore --apply ~/.config/nvim` restores only paths under
+    `~/.config/nvim`.
 11. Absolute-path restore is refused unless both `--apply` and
     `--allow-absolute` are present.
 12. `dotr watch` coalesces multiple save events into one backup.

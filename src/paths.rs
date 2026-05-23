@@ -157,10 +157,11 @@ mod tests {
 
     #[test]
     fn maps_home_paths_under_files_home() {
-        let mapped = source_to_stored(Path::new("/Users/me/code/bin/tool"), &env(), false).unwrap();
+        let mapped =
+            source_to_stored(Path::new("/Users/me/projects/bin/tool"), &env(), false).unwrap();
 
         assert_eq!(mapped.root, StoredRoot::Home);
-        assert_eq!(mapped.as_index_path(), "files/home/code/bin/tool");
+        assert_eq!(mapped.as_index_path(), "files/home/projects/bin/tool");
     }
 
     #[test]
@@ -189,8 +190,9 @@ mod tests {
 
     #[test]
     fn maps_stored_paths_back_to_targets() {
-        let (_, target) = stored_index_to_target("files/home/.codex/AGENTS.md", &env()).unwrap();
-        assert_eq!(target, PathBuf::from("/Users/me/.codex/AGENTS.md"));
+        let (_, target) =
+            stored_index_to_target("files/home/.config/nvim/init.lua", &env()).unwrap();
+        assert_eq!(target, PathBuf::from("/Users/me/.config/nvim/init.lua"));
 
         let (_, target) = stored_index_to_target("files/absolute/Library/example", &env()).unwrap();
         assert_eq!(target, PathBuf::from("/Library/example"));

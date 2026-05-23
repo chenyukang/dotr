@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Read,
     path::Path,
     time::UNIX_EPOCH,
 };
@@ -17,6 +18,7 @@ use crate::{
     hash::{sha256_bytes, sha256_file},
     index::{EntryKind, Index, IndexEntry},
     paths::{absolutize, ensure_safe_relative, source_to_stored},
+    progress::{BackupProgress, NoopProgress},
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -46,8 +48,19 @@ impl BackupReport {
 }
 
 pub fn run(repo_root: &Path, env: &Environment, options: &BackupOptions) -> Result<BackupReport> {
+    let mut progress = NoopProgress;
+    run_with_progress(repo_root, env, options, &mut progress)
+}
+
+pub fn run_with_progress(
+    repo_root: &Path,
+    env: &Environment,
+    options: &BackupOptions,
+    progress: &mut impl BackupProgress,
+) -> Result<BackupReport> {
+    progress.phase("loading config");
     let config = Config::load(repo_root)?;
-    run_with_config(repo_root, env, &config, options, &CommandGit)
+    run_with_config_and_progress(repo_root, env, &config, options, &CommandGit, progress)
 }
 
 pub fn run_with_config(
@@ -57,9 +70,25 @@ pub fn run_with_config(
     options: &BackupOptions,
     git: &impl GitBackend,
 ) -> Result<BackupReport> {
+    let mut progress = NoopProgress;
+    run_with_config_and_progress(repo_root, env, config, options, git, &mut progress)
+}
+
+fn run_with_config_and_progress(
+    repo_root: &Path,
+    env: &Environment,
+    config: &Config,
+    options: &BackupOptions,
+    git: &impl GitBackend,
+    progress: &mut impl BackupProgress,
+) -> Result<BackupReport> {
+    progress.start(repo_root);
+    progress.phase("reading metadata");
     let store_dir = config.store_dir(repo_root);
     let index_file = index_path(&store_dir);
     let previous = Index::read(&index_file)?;
+
+    progress.phase("preparing rules");
     let default_excludes = default_exclude_set()?;
     let max_file_size = config.max_file_size_bytes()?;
     let recipients = if config.has_encrypted_paths() && !options.dry_run {
@@ -79,7 +108,8 @@ pub fn run_with_config(
 
     for path_config in &config.paths {
         let source = absolutize(&env.expand_tilde(&path_config.src), repo_root);
-        if !source.exists() {
+        progress.source(&source);
+        if !source_exists(&source, path_config.follow_symlink) {
             report.skipped += 1;
             report
                 .actions
@@ -87,17 +117,49 @@ pub fn run_with_config(
             continue;
         }
 
+        let local_includes = if path_config.include.is_empty() {
+            None
+        } else {
+            Some(globset_from_patterns(
+                path_config.include.iter().map(String::as_str),
+            )?)
+        };
         let local_excludes = globset_from_patterns(path_config.exclude.iter().map(String::as_str))?;
-        if source.is_dir() && !source.symlink_metadata()?.file_type().is_symlink() {
+        if should_walk_source(&source, path_config.follow_symlink)? {
+            let mut scanned = 0;
             for entry in WalkDir::new(&source)
-                .follow_links(false)
+                .follow_links(path_config.follow_symlink)
                 .into_iter()
                 .filter_entry(|entry| {
                     !is_excluded(entry.path(), &source, &default_excludes, &local_excludes)
                 })
             {
-                let entry =
-                    entry.with_context(|| format!("failed to walk {}", source.display()))?;
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(err) => {
+                        report.skipped += 1;
+                        if let Some(path) = err.path() {
+                            report
+                                .actions
+                                .push(format!("skip unreadable {}", path.display()));
+                        } else {
+                            report
+                                .actions
+                                .push(format!("skip walk error under {}", source.display()));
+                        }
+                        continue;
+                    }
+                };
+                scanned += 1;
+                progress.scanned(scanned, entry.path());
+                if !is_included(
+                    entry.path(),
+                    &source,
+                    local_includes.as_ref(),
+                    path_config.follow_symlink,
+                ) {
+                    continue;
+                }
                 process_entry(
                     env,
                     &store_dir,
@@ -106,6 +168,8 @@ pub fn run_with_config(
                     &mut report,
                     entry.path(),
                     path_config.encrypt,
+                    path_config.follow_symlink,
+                    path_config.include_binary_file,
                     max_file_size,
                     recipients.as_deref(),
                     options.dry_run,
@@ -116,6 +180,16 @@ pub fn run_with_config(
             report
                 .actions
                 .push(format!("skip excluded {}", source.display()));
+        } else if !is_included(
+            &source,
+            &source,
+            local_includes.as_ref(),
+            path_config.follow_symlink,
+        ) {
+            report.skipped += 1;
+            report
+                .actions
+                .push(format!("skip not included {}", source.display()));
         } else {
             process_entry(
                 env,
@@ -125,6 +199,8 @@ pub fn run_with_config(
                 &mut report,
                 &source,
                 path_config.encrypt,
+                path_config.follow_symlink,
+                path_config.include_binary_file,
                 max_file_size,
                 recipients.as_deref(),
                 options.dry_run,
@@ -132,6 +208,7 @@ pub fn run_with_config(
         }
     }
 
+    progress.phase("checking deletions");
     handle_deletions(
         &store_dir,
         &previous,
@@ -141,7 +218,13 @@ pub fn run_with_config(
         options.dry_run,
     )?;
 
+    if !options.no_delete {
+        progress.phase("pruning orphan files");
+        prune_orphan_stored_files(&store_dir, &current, &mut report, options.dry_run)?;
+    }
+
     if !options.dry_run {
+        progress.phase("writing metadata/index.json");
         let index = Index {
             version: 1,
             entries: current.into_values().collect(),
@@ -157,17 +240,45 @@ pub fn run_with_config(
                 config.git.commit_message,
                 change_summary(&report)
             );
+            progress.phase("committing git changes");
             git.commit_backup(repo_root, &message, config.git.include_unrelated)?;
         }
 
         let should_push =
             !options.no_git && report.changed() && (options.push || config.git.auto_push);
         if should_push {
+            progress.phase("pushing git changes");
             git.push(repo_root)?;
         }
     }
 
     Ok(report)
+}
+
+fn is_included(
+    path: &Path,
+    source_root: &Path,
+    include: Option<&GlobSet>,
+    follow_symlink: bool,
+) -> bool {
+    let Some(include) = include else {
+        return true;
+    };
+
+    let Ok(metadata) = metadata_for_backup(path, follow_symlink) else {
+        return false;
+    };
+
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        return false;
+    }
+
+    let rel = path.strip_prefix(source_root).unwrap_or(path);
+    include.is_match(path)
+        || include.is_match(rel)
+        || path
+            .file_name()
+            .is_some_and(|file_name| include.is_match(file_name))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -179,11 +290,13 @@ fn process_entry(
     report: &mut BackupReport,
     source: &Path,
     encrypted: bool,
+    follow_symlink: bool,
+    include_binary_file: bool,
     max_file_size: u64,
     recipients: Option<&[age::x25519::Recipient]>,
     dry_run: bool,
 ) -> Result<()> {
-    let metadata = fs::symlink_metadata(source)
+    let metadata = metadata_for_backup(source, follow_symlink)
         .with_context(|| format!("failed to read metadata for {}", source.display()))?;
     let file_type = metadata.file_type();
     let mode = unix_mode(&metadata);
@@ -195,6 +308,14 @@ fn process_entry(
             source.display(),
             metadata.len()
         ));
+        return Ok(());
+    }
+
+    if file_type.is_file() && !include_binary_file && is_binary_file(source)? {
+        report.skipped += 1;
+        report
+            .actions
+            .push(format!("skip binary {}", source.display()));
         return Ok(());
     }
 
@@ -335,15 +456,121 @@ fn handle_deletions(
     Ok(())
 }
 
+fn prune_orphan_stored_files(
+    store_dir: &Path,
+    current: &BTreeMap<String, IndexEntry>,
+    report: &mut BackupReport,
+    dry_run: bool,
+) -> Result<()> {
+    let files_dir = store_dir.join("files");
+    if !files_dir.exists() {
+        return Ok(());
+    }
+
+    let mut orphan_files = Vec::new();
+    for entry in WalkDir::new(&files_dir).follow_links(false) {
+        let entry = entry?;
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            continue;
+        }
+
+        let stored = entry
+            .path()
+            .strip_prefix(store_dir)
+            .with_context(|| format!("stored path escaped {}", store_dir.display()))?;
+        ensure_safe_relative(stored)?;
+        let key = stored.to_string_lossy().replace('\\', "/");
+        if !current.contains_key(&key) {
+            orphan_files.push((entry.path().to_path_buf(), key));
+        }
+    }
+
+    orphan_files.sort_by(|a, b| a.1.cmp(&b.1));
+    for (path, key) in orphan_files {
+        report.deleted += 1;
+        report.actions.push(format!("delete orphan {key}"));
+        if !dry_run {
+            remove_if_exists(&path)?;
+        }
+    }
+
+    if !dry_run {
+        remove_empty_orphan_dirs(&files_dir, store_dir, current)?;
+    }
+
+    Ok(())
+}
+
+fn remove_empty_orphan_dirs(
+    files_dir: &Path,
+    store_dir: &Path,
+    current: &BTreeMap<String, IndexEntry>,
+) -> Result<()> {
+    let mut dirs = Vec::new();
+    for entry in WalkDir::new(files_dir)
+        .follow_links(false)
+        .contents_first(true)
+    {
+        let entry = entry?;
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            dirs.push(entry.path().to_path_buf());
+        }
+    }
+
+    for dir in dirs {
+        if dir == files_dir || dir == files_dir.join("home") || dir == files_dir.join("absolute") {
+            continue;
+        }
+
+        let stored = dir
+            .strip_prefix(store_dir)
+            .with_context(|| format!("stored path escaped {}", store_dir.display()))?;
+        ensure_safe_relative(stored)?;
+        let key = stored.to_string_lossy().replace('\\', "/");
+        if current.contains_key(&key) {
+            continue;
+        }
+
+        if fs::read_dir(&dir)?.next().is_none() {
+            fs::remove_dir(&dir).with_context(|| format!("failed to remove {}", dir.display()))?;
+        }
+    }
+
+    Ok(())
+}
+
 fn is_excluded(path: &Path, source_root: &Path, default: &GlobSet, local: &GlobSet) -> bool {
     let rel = path.strip_prefix(source_root).unwrap_or(path);
-    default.is_match(path)
-        || default.is_match(rel)
+    default.is_match(rel)
         || local.is_match(path)
         || local.is_match(rel)
         || path
             .file_name()
             .is_some_and(|file_name| default.is_match(file_name) || local.is_match(file_name))
+}
+
+fn should_walk_source(source: &Path, follow_symlink: bool) -> Result<bool> {
+    let metadata = metadata_for_backup(source, follow_symlink)
+        .with_context(|| format!("failed to read metadata for {}", source.display()))?;
+    Ok(metadata.is_dir() && (follow_symlink || !metadata.file_type().is_symlink()))
+}
+
+fn metadata_for_backup(path: &Path, follow_symlink: bool) -> std::io::Result<fs::Metadata> {
+    if follow_symlink {
+        fs::metadata(path)
+    } else {
+        fs::symlink_metadata(path)
+    }
+}
+
+fn source_exists(path: &Path, follow_symlink: bool) -> bool {
+    if follow_symlink {
+        path.exists()
+    } else {
+        fs::symlink_metadata(path).is_ok()
+    }
 }
 
 fn record_change(
@@ -426,6 +653,17 @@ fn copy_file(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
+fn is_binary_file(path: &Path) -> Result<bool> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut buffer = [0_u8; 8192];
+    let bytes_read = file
+        .read(&mut buffer)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+
+    Ok(buffer[..bytes_read].contains(&0))
+}
+
 fn remove_if_exists(path: &Path) -> Result<()> {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return Ok(());
@@ -455,6 +693,30 @@ mod tests {
     use super::*;
     use crate::{config::PathConfig, init};
 
+    #[derive(Default)]
+    struct RecordingProgress {
+        events: Vec<String>,
+    }
+
+    impl crate::progress::BackupProgress for RecordingProgress {
+        fn start(&mut self, repo_root: &Path) {
+            self.events.push(format!("start {}", repo_root.display()));
+        }
+
+        fn phase(&mut self, message: &str) {
+            self.events.push(format!("phase {message}"));
+        }
+
+        fn source(&mut self, source: &Path) {
+            self.events.push(format!("source {}", source.display()));
+        }
+
+        fn scanned(&mut self, scanned: usize, current: &Path) {
+            self.events
+                .push(format!("scanned {scanned} {}", current.display()));
+        }
+    }
+
     fn env_for(home: &Path) -> Environment {
         Environment::new(home.to_path_buf()).unwrap()
     }
@@ -469,7 +731,7 @@ mod tests {
         })
         .unwrap();
         let toml = toml::to_string_pretty(config).unwrap();
-        fs::write(repo.path().join("backup/dotr.toml"), toml).unwrap();
+        fs::write(repo.path().join("dotr.toml"), toml).unwrap();
         fs::create_dir_all(home).unwrap();
         repo
     }
@@ -478,13 +740,16 @@ mod tests {
     fn backs_up_home_file_and_noops_on_second_run() {
         let home_dir = tempdir().unwrap();
         let home = home_dir.path();
-        fs::create_dir_all(home.join(".codex")).unwrap();
-        fs::write(home.join(".codex/AGENTS.md"), "rules").unwrap();
+        fs::create_dir_all(home.join(".config/nvim")).unwrap();
+        fs::write(home.join(".config/nvim/init.lua"), "rules").unwrap();
 
         let mut config = Config::default();
         config.paths.push(PathConfig {
-            src: "~/.codex".to_string(),
+            src: "~/.config/nvim".to_string(),
+            include: Vec::new(),
             exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -503,7 +768,7 @@ mod tests {
         .unwrap();
         assert!(first.added >= 1);
         assert_eq!(
-            fs::read_to_string(repo.path().join("backup/files/home/.codex/AGENTS.md")).unwrap(),
+            fs::read_to_string(repo.path().join("files/home/.config/nvim/init.lua")).unwrap(),
             "rules"
         );
 
@@ -522,6 +787,71 @@ mod tests {
     }
 
     #[test]
+    fn reports_backup_progress_events() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join(".config/nvim")).unwrap();
+        fs::write(home.join(".config/nvim/init.lua"), "rules").unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: "~/.config/nvim".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            encrypt: false,
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+        let mut progress = RecordingProgress::default();
+
+        run_with_config_and_progress(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &CommandGit,
+            &mut progress,
+        )
+        .unwrap();
+
+        assert!(
+            progress
+                .events
+                .iter()
+                .any(|event| event.starts_with("start "))
+        );
+        assert!(
+            progress
+                .events
+                .iter()
+                .any(|event| event == "phase reading metadata")
+        );
+        assert!(
+            progress
+                .events
+                .iter()
+                .any(|event| event.contains(".config/nvim"))
+        );
+        assert!(
+            progress
+                .events
+                .iter()
+                .any(|event| event.starts_with("scanned "))
+        );
+        assert!(
+            progress
+                .events
+                .iter()
+                .any(|event| event == "phase writing metadata/index.json")
+        );
+    }
+
+    #[test]
     fn excludes_default_secret_like_files() {
         let home_dir = tempdir().unwrap();
         let home = home_dir.path();
@@ -532,7 +862,10 @@ mod tests {
         let mut config = Config::default();
         config.paths.push(PathConfig {
             src: "~/app".to_string(),
+            include: Vec::new(),
             exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -550,12 +883,202 @@ mod tests {
         )
         .unwrap();
 
+        assert!(repo.path().join("files/home/app/config.toml").exists());
+        assert!(!repo.path().join("files/home/app/.env").exists());
+    }
+
+    #[test]
+    fn include_rules_allow_only_selected_files_under_large_app_dirs() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join(".codex/rules")).unwrap();
+        fs::create_dir_all(home.join(".codex/sessions/2026")).unwrap();
+        fs::create_dir_all(home.join(".codex/cache")).unwrap();
+        fs::write(home.join(".codex/AGENTS.md"), "agents").unwrap();
+        fs::write(home.join(".codex/rules/default.rules"), "rules").unwrap();
+        fs::write(home.join(".codex/sessions/2026/session.jsonl"), "session").unwrap();
+        fs::write(home.join(".codex/cache/item.json"), "cache").unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: "~/.codex".to_string(),
+            include: vec!["AGENTS.md".to_string(), "rules/**".to_string()],
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            encrypt: false,
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+
+        run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &CommandGit,
+        )
+        .unwrap();
+
+        assert!(repo.path().join("files/home/.codex/AGENTS.md").exists());
         assert!(
             repo.path()
-                .join("backup/files/home/app/config.toml")
+                .join("files/home/.codex/rules/default.rules")
                 .exists()
         );
-        assert!(!repo.path().join("backup/files/home/app/.env").exists());
+        assert!(
+            !repo
+                .path()
+                .join("files/home/.codex/sessions/2026/session.jsonl")
+                .exists()
+        );
+        assert!(
+            !repo
+                .path()
+                .join("files/home/.codex/cache/item.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn skips_binary_files_by_default() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join("assets")).unwrap();
+        fs::write(home.join("assets/icon.bin"), [0_u8, 159, 146, 150]).unwrap();
+        fs::write(home.join("assets/config.toml"), "theme = 'light'").unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: "~/assets".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            encrypt: false,
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+
+        let report = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &CommandGit,
+        )
+        .unwrap();
+
+        assert!(
+            report
+                .actions
+                .iter()
+                .any(|action| action.contains("skip binary"))
+        );
+        assert!(repo.path().join("files/home/assets/config.toml").exists());
+        assert!(!repo.path().join("files/home/assets/icon.bin").exists());
+    }
+
+    #[test]
+    fn include_binary_file_allows_included_binary_files() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        let binary = [0_u8, 159, 146, 150];
+        fs::create_dir_all(home.join("app/assets")).unwrap();
+        fs::write(home.join("app/assets/icon.png"), binary).unwrap();
+        fs::write(home.join("app/state.db"), [0_u8, 1, 2, 3]).unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: "~/app".to_string(),
+            include: vec!["assets/**".to_string()],
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: true,
+            encrypt: false,
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+
+        run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &CommandGit,
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read(repo.path().join("files/home/app/assets/icon.png")).unwrap(),
+            binary
+        );
+        assert!(!repo.path().join("files/home/app/state.db").exists());
+    }
+
+    #[test]
+    fn prunes_orphan_files_under_managed_store() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join(".config/nvim")).unwrap();
+        fs::write(home.join(".config/nvim/init.lua"), "set number").unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: "~/.config/nvim".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            encrypt: false,
+        });
+        let repo = repo_with_config(home, &config);
+        fs::create_dir_all(repo.path().join("files/home/.codex/cache")).unwrap();
+        fs::write(
+            repo.path().join("files/home/.codex/cache/stale.json"),
+            "stale",
+        )
+        .unwrap();
+        let env = env_for(home);
+
+        let report = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &CommandGit,
+        )
+        .unwrap();
+
+        assert!(
+            report
+                .actions
+                .iter()
+                .any(|action| action == "delete orphan files/home/.codex/cache/stale.json")
+        );
+        assert!(
+            !repo
+                .path()
+                .join("files/home/.codex/cache/stale.json")
+                .exists()
+        );
+        assert!(
+            repo.path()
+                .join("files/home/.config/nvim/init.lua")
+                .exists()
+        );
     }
 
     #[test]
@@ -568,7 +1091,10 @@ mod tests {
         let mut config = Config::default();
         config.paths.push(PathConfig {
             src: "~/bin".to_string(),
+            include: Vec::new(),
             exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -583,7 +1109,7 @@ mod tests {
         let report = run_with_config(repo.path(), &env, &config, &options, &CommandGit).unwrap();
 
         assert!(report.deleted >= 1);
-        assert!(!repo.path().join("backup/files/home/bin/tool").exists());
+        assert!(!repo.path().join("files/home/bin/tool").exists());
     }
 
     #[test]
@@ -604,21 +1130,20 @@ mod tests {
 
         let identity = age::x25519::Identity::generate();
         let recipient = identity.to_public();
-        fs::write(
-            repo.path().join("backup/recipients.txt"),
-            recipient.to_string(),
-        )
-        .unwrap();
+        fs::write(repo.path().join("recipients.txt"), recipient.to_string()).unwrap();
 
         let mut config = Config::default();
-        config.encryption.recipients_file = Some("backup/recipients.txt".to_string());
+        config.encryption.recipients_file = Some("recipients.txt".to_string());
         config.paths.push(PathConfig {
             src: "~/.config/app/token.json".to_string(),
+            include: Vec::new(),
             exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
             encrypt: true,
         });
         fs::write(
-            repo.path().join("backup/dotr.toml"),
+            repo.path().join("dotr.toml"),
             toml::to_string_pretty(&config).unwrap(),
         )
         .unwrap();
@@ -636,18 +1161,15 @@ mod tests {
         )
         .unwrap();
 
-        let encrypted = fs::read(
-            repo.path()
-                .join("backup/files/home/.config/app/token.json.age"),
-        )
-        .unwrap();
+        let encrypted =
+            fs::read(repo.path().join("files/home/.config/app/token.json.age")).unwrap();
         assert!(
             !encrypted
                 .windows(b"secret-token".len())
                 .any(|window| window == b"secret-token")
         );
 
-        let index = Index::read(&repo.path().join("backup/metadata/index.json")).unwrap();
+        let index = Index::read(&repo.path().join("metadata/index.json")).unwrap();
         let entry = index
             .entries
             .iter()
@@ -665,7 +1187,7 @@ mod tests {
     }
 
     #[test]
-    fn symlinks_are_recorded_as_symlinks_not_followed() {
+    fn symlinks_are_followed_by_default() {
         let home_dir = tempdir().unwrap();
         let home = home_dir.path();
         fs::create_dir_all(home.join("links")).unwrap();
@@ -675,7 +1197,10 @@ mod tests {
         let mut config = Config::default();
         config.paths.push(PathConfig {
             src: "~/links".to_string(),
+            include: Vec::new(),
             exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -693,8 +1218,95 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!repo.path().join("backup/files/home/links/current").exists());
-        let index = Index::read(&repo.path().join("backup/metadata/index.json")).unwrap();
+        assert_eq!(
+            fs::read_to_string(repo.path().join("files/home/links/current")).unwrap(),
+            "outside"
+        );
+        let index = Index::read(&repo.path().join("metadata/index.json")).unwrap();
+        let entry = index
+            .entries
+            .iter()
+            .find(|entry| entry.source.ends_with("links/current"))
+            .unwrap();
+        assert_eq!(entry.kind, EntryKind::File);
+        assert!(entry.symlink_target.is_none());
+    }
+
+    #[test]
+    fn broken_symlinks_are_skipped_when_following_symlinks() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join("links")).unwrap();
+        unix_fs::symlink(home.join("missing"), home.join("links/current")).unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: "~/links".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            encrypt: false,
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+
+        let report = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &CommandGit,
+        )
+        .unwrap();
+
+        assert!(report.skipped >= 1);
+        assert!(
+            report
+                .actions
+                .iter()
+                .any(|action| action.contains("skip unreadable"))
+        );
+        assert!(!repo.path().join("files/home/links/current").exists());
+    }
+
+    #[test]
+    fn follow_symlink_false_records_symlinks_not_followed() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join("links")).unwrap();
+        fs::write(home.join("outside"), "outside").unwrap();
+        unix_fs::symlink(home.join("outside"), home.join("links/current")).unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: "~/links".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: false,
+            include_binary_file: false,
+            encrypt: false,
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+
+        run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &CommandGit,
+        )
+        .unwrap();
+
+        assert!(!repo.path().join("files/home/links/current").exists());
+        let index = Index::read(&repo.path().join("metadata/index.json")).unwrap();
         let entry = index
             .entries
             .iter()

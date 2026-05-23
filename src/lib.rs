@@ -1,6 +1,7 @@
 pub mod backup;
 pub mod cli;
 pub mod config;
+pub mod daemon;
 pub mod doctor;
 pub mod encryption;
 pub mod environment;
@@ -8,9 +9,13 @@ pub mod git;
 pub mod hash;
 pub mod index;
 pub mod init;
+pub mod manage;
 pub mod paths;
+pub mod progress;
+pub mod repo;
 pub mod restore;
 pub mod status;
+pub mod structured_log;
 pub mod watch;
 
 pub type Result<T> = anyhow::Result<T>;

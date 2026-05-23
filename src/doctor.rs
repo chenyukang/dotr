@@ -77,11 +77,7 @@ mod tests {
             force: false,
         })
         .unwrap();
-        fs::write(
-            repo.path().join("backup/identity.txt"),
-            "AGE-SECRET-KEY-1BAD",
-        )
-        .unwrap();
+        fs::write(repo.path().join("identity.txt"), "AGE-SECRET-KEY-1BAD").unwrap();
 
         let env = Environment::new(tempdir().unwrap().path().to_path_buf()).unwrap();
         let err = run(repo.path(), &env).unwrap_err();

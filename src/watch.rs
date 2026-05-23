@@ -9,11 +9,12 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use globset::GlobSet;
 use notify::{RecursiveMode, Watcher};
 
 use crate::{
     backup::{self, BackupOptions},
-    config::Config,
+    config::{Config, default_exclude_set, globset_from_patterns},
     environment::Environment,
     paths::absolutize,
 };
@@ -21,11 +22,9 @@ use crate::{
 pub fn run(repo_root: &Path, env: &Environment) -> Result<()> {
     let config = Config::load(repo_root)?;
     let debounce = Duration::from_secs(config.watch.debounce_secs);
-    let source_roots = config
-        .paths
-        .iter()
-        .map(|path| absolutize(&env.expand_tilde(&path.src), repo_root))
-        .collect::<Vec<_>>();
+    let event_rules = WatchRules::from_config(&config, repo_root, env)?;
+    let source_roots = event_rules.source_roots();
+    let watch_specs = watch_specs_for_sources(&source_roots);
 
     let (tx, rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |result| {
@@ -33,12 +32,20 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<()> {
     })
     .context("failed to create filesystem watcher")?;
 
-    for source in &source_roots {
-        if source.exists() {
-            watcher
-                .watch(source, RecursiveMode::Recursive)
-                .with_context(|| format!("failed to watch {}", source.display()))?;
-        }
+    eprintln!("watch: repo {}", repo_root.display());
+    eprintln!("watch: debounce {}s", debounce.as_secs());
+    for spec in &watch_specs {
+        watcher
+            .watch(&spec.path, spec.recursive_mode())
+            .with_context(|| format!("failed to watch {}", spec.path.display()))?;
+        eprintln!(
+            "watch: watching {} ({})",
+            spec.path.display(),
+            spec.mode_label()
+        );
+    }
+    if watch_specs.is_empty() {
+        eprintln!("watch: no source paths are currently watchable");
     }
 
     let running = Arc::new(AtomicBool::new(false));
@@ -47,10 +54,14 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<()> {
         if event
             .paths
             .iter()
-            .all(|path| should_ignore_event_path(path, repo_root, &source_roots))
+            .all(|path| should_ignore_event_path(path, repo_root, &event_rules))
         {
             continue;
         }
+        eprintln!(
+            "watch: change detected {}",
+            display_event_paths(&event.paths)
+        );
 
         let mut deadline = debounce_deadline(Instant::now(), debounce);
         while Instant::now() < deadline {
@@ -60,7 +71,7 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<()> {
                     if next
                         .paths
                         .iter()
-                        .any(|path| !should_ignore_event_path(path, repo_root, &source_roots))
+                        .any(|path| !should_ignore_event_path(path, repo_root, &event_rules))
                     {
                         deadline = debounce_deadline(Instant::now(), debounce);
                         continue;
@@ -75,6 +86,7 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<()> {
         if running.swap(true, Ordering::SeqCst) {
             continue;
         }
+        eprintln!("watch: running backup");
         let result = backup::run(
             repo_root,
             env,
@@ -84,57 +96,343 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<()> {
             },
         );
         running.store(false, Ordering::SeqCst);
-        result?;
+        let report = result?;
+        for action in &report.actions {
+            eprintln!("watch: {action}");
+        }
+        eprintln!(
+            "watch: backup complete: {} added, {} updated, {} deleted, {} unchanged, {} skipped",
+            report.added, report.updated, report.deleted, report.unchanged, report.skipped
+        );
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchSpec {
+    pub path: PathBuf,
+    pub recursive: bool,
+}
+
+impl WatchSpec {
+    fn new(path: PathBuf, recursive: bool) -> Self {
+        Self { path, recursive }
+    }
+
+    fn recursive_mode(&self) -> RecursiveMode {
+        if self.recursive {
+            RecursiveMode::Recursive
+        } else {
+            RecursiveMode::NonRecursive
+        }
+    }
+
+    fn mode_label(&self) -> &'static str {
+        if self.recursive {
+            "recursive"
+        } else {
+            "non-recursive"
+        }
+    }
+}
+
+pub fn watch_specs_for_sources(source_roots: &[PathBuf]) -> Vec<WatchSpec> {
+    let mut specs = Vec::new();
+    for source in source_roots {
+        let spec = if source.is_dir() {
+            Some(WatchSpec::new(source.clone(), true))
+        } else {
+            source
+                .parent()
+                .filter(|parent| parent.exists())
+                .map(|parent| WatchSpec::new(parent.to_path_buf(), false))
+        };
+
+        if let Some(spec) = spec {
+            push_unique_watch_spec(&mut specs, spec);
+        }
+    }
+
+    specs
 }
 
 pub fn debounce_deadline(now: Instant, debounce: Duration) -> Instant {
     now + debounce
 }
 
-pub fn should_ignore_event_path(path: &Path, repo_root: &Path, source_roots: &[PathBuf]) -> bool {
-    if !path.starts_with(repo_root) {
-        return false;
+pub fn should_ignore_event_path(path: &Path, repo_root: &Path, rules: &WatchRules) -> bool {
+    !is_relevant_event_path(path, repo_root, rules)
+}
+
+#[derive(Debug)]
+pub struct WatchRules {
+    default_excludes: GlobSet,
+    rules: Vec<WatchRule>,
+}
+
+impl WatchRules {
+    pub fn from_config(config: &Config, repo_root: &Path, env: &Environment) -> Result<Self> {
+        let default_excludes = default_exclude_set()?;
+        let mut rules = Vec::new();
+        for path_config in &config.paths {
+            let source = absolutize(&env.expand_tilde(&path_config.src), repo_root);
+            let include = if path_config.include.is_empty() {
+                None
+            } else {
+                Some(globset_from_patterns(
+                    path_config.include.iter().map(String::as_str),
+                )?)
+            };
+            let local_excludes =
+                globset_from_patterns(path_config.exclude.iter().map(String::as_str))?;
+            rules.push(WatchRule {
+                source,
+                include,
+                local_excludes,
+            });
+        }
+
+        Ok(Self {
+            default_excludes,
+            rules,
+        })
     }
 
-    !source_roots.iter().any(|source| {
-        source == repo_root || (source.starts_with(repo_root) && path.starts_with(source))
-    })
+    fn source_roots(&self) -> Vec<PathBuf> {
+        self.rules.iter().map(|rule| rule.source.clone()).collect()
+    }
+}
+
+#[derive(Debug)]
+struct WatchRule {
+    source: PathBuf,
+    include: Option<GlobSet>,
+    local_excludes: GlobSet,
+}
+
+impl WatchRule {
+    fn matches_event(&self, path: &Path, default_excludes: &GlobSet) -> bool {
+        if !is_related_to_source(path, &self.source) {
+            return false;
+        }
+
+        !is_excluded_event(path, &self.source, default_excludes, &self.local_excludes)
+            && is_included_event(path, &self.source, self.include.as_ref())
+    }
+}
+
+fn is_relevant_event_path(path: &Path, repo_root: &Path, rules: &WatchRules) -> bool {
+    if path.starts_with(repo_root) {
+        return rules.rules.iter().any(|rule| {
+            (rule.source == repo_root
+                || (rule.source.starts_with(repo_root) && path.starts_with(&rule.source)))
+                && rule.matches_event(path, &rules.default_excludes)
+        });
+    }
+
+    rules
+        .rules
+        .iter()
+        .any(|rule| rule.matches_event(path, &rules.default_excludes))
+}
+
+fn is_related_to_source(path: &Path, source: &Path) -> bool {
+    path.starts_with(source) || source == path
+}
+
+fn is_excluded_event(path: &Path, source_root: &Path, default: &GlobSet, local: &GlobSet) -> bool {
+    let rel = path.strip_prefix(source_root).unwrap_or(path);
+    default.is_match(rel)
+        || local.is_match(path)
+        || local.is_match(rel)
+        || path
+            .file_name()
+            .is_some_and(|file_name| default.is_match(file_name) || local.is_match(file_name))
+}
+
+fn is_included_event(path: &Path, source_root: &Path, include: Option<&GlobSet>) -> bool {
+    let Some(include) = include else {
+        return true;
+    };
+
+    if path == source_root {
+        return true;
+    }
+
+    let rel = path.strip_prefix(source_root).unwrap_or(path);
+    include.is_match(path)
+        || include.is_match(rel)
+        || path
+            .file_name()
+            .is_some_and(|file_name| include.is_match(file_name))
+}
+
+fn push_unique_watch_spec(specs: &mut Vec<WatchSpec>, spec: WatchSpec) {
+    if !specs.iter().any(|existing| existing == &spec) {
+        specs.push(spec);
+    }
+}
+
+fn display_event_paths(paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return "<unknown>".to_string();
+    }
+
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[cfg(test)]
+fn watch_rules_for_sources(source_roots: &[PathBuf]) -> WatchRules {
+    WatchRules {
+        default_excludes: default_exclude_set().unwrap(),
+        rules: source_roots
+            .iter()
+            .map(|source| WatchRule {
+                source: source.clone(),
+                include: None,
+                local_excludes: globset_from_patterns(std::iter::empty::<&str>()).unwrap(),
+            })
+            .collect(),
+    }
+}
+
+#[cfg(test)]
+fn watch_rules_from_toml(raw: &str, repo_root: &Path, env: &Environment) -> WatchRules {
+    let config = toml::from_str(raw).unwrap();
+    WatchRules::from_config(&config, repo_root, env).unwrap()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn watches_directories_recursively_and_file_parents_non_recursively() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+        let file = root.join(".zshrc");
+        let dir = root.join(".config/nvim");
+        let missing = root.join(".missing");
+        fs::write(&file, "").unwrap();
+        fs::create_dir_all(&dir).unwrap();
+
+        let specs = watch_specs_for_sources(&[file.clone(), dir.clone(), missing.clone()]);
+
+        assert_eq!(
+            specs,
+            vec![
+                WatchSpec::new(root.to_path_buf(), false),
+                WatchSpec::new(dir, true)
+            ]
+        );
+    }
 
     #[test]
     fn ignores_repo_events_unless_repo_is_a_source() {
-        let repo = PathBuf::from("/tmp/repo");
-        let sources = vec![PathBuf::from("/tmp/home/.codex")];
+        let repo = PathBuf::from("/repo");
+        let rules = watch_rules_for_sources(&[PathBuf::from("/home/me/.config/nvim")]);
 
         assert!(should_ignore_event_path(
-            Path::new("/tmp/repo/backup/metadata/index.json"),
+            Path::new("/repo/metadata/index.json"),
             &repo,
-            &sources
+            &rules
         ));
         assert!(!should_ignore_event_path(
-            Path::new("/tmp/home/.codex/AGENTS.md"),
+            Path::new("/home/me/.config/nvim/init.lua"),
             &repo,
-            &sources
+            &rules
         ));
         assert!(!should_ignore_event_path(
-            Path::new("/tmp/repo/backup/dotr.toml"),
+            Path::new("/repo/dotr.toml"),
             &repo,
-            std::slice::from_ref(&repo)
+            &watch_rules_for_sources(std::slice::from_ref(&repo))
         ));
         assert!(should_ignore_event_path(
-            Path::new("/tmp/repo/backup/metadata/index.json"),
+            Path::new("/repo/metadata/index.json"),
             &repo,
-            &[PathBuf::from("/tmp")]
+            &watch_rules_for_sources(&[PathBuf::from("/")])
         ));
         assert!(!should_ignore_event_path(
-            Path::new("/tmp/repo/sources/file"),
+            Path::new("/repo/sources/file"),
             &repo,
-            &[PathBuf::from("/tmp/repo/sources")]
+            &watch_rules_for_sources(&[PathBuf::from("/repo/sources")])
+        ));
+    }
+
+    #[test]
+    fn filters_parent_watch_events_to_configured_sources() {
+        let repo = PathBuf::from("/repo");
+        let rules = watch_rules_for_sources(&[
+            PathBuf::from("/home/me/.zshrc"),
+            PathBuf::from("/home/me/.config/nvim"),
+        ]);
+
+        assert!(!should_ignore_event_path(
+            Path::new("/home/me/.zshrc"),
+            &repo,
+            &rules
+        ));
+        assert!(!should_ignore_event_path(
+            Path::new("/home/me/.config/nvim/init.lua"),
+            &repo,
+            &rules
+        ));
+        assert!(should_ignore_event_path(
+            Path::new("/home/me/.vimrc"),
+            &repo,
+            &rules
+        ));
+        assert!(should_ignore_event_path(
+            Path::new("/home/me"),
+            &repo,
+            &rules
+        ));
+    }
+
+    #[test]
+    fn ignores_events_excluded_or_not_included_by_config() {
+        let env = Environment::new(PathBuf::from("/home/me")).unwrap();
+        let repo = PathBuf::from("/repo");
+        let rules = watch_rules_from_toml(
+            r#"
+            [[path]]
+            src = "~/.codex"
+            include = ["AGENTS.md", "config.toml", "skills/**"]
+            exclude = ["skills/.system/**"]
+            "#,
+            &repo,
+            &env,
+        );
+
+        assert!(!should_ignore_event_path(
+            Path::new("/home/me/.codex/config.toml"),
+            &repo,
+            &rules
+        ));
+        assert!(!should_ignore_event_path(
+            Path::new("/home/me/.codex/skills/my-skill/SKILL.md"),
+            &repo,
+            &rules
+        ));
+        assert!(should_ignore_event_path(
+            Path::new("/home/me/.codex/logs_2.sqlite"),
+            &repo,
+            &rules
+        ));
+        assert!(should_ignore_event_path(
+            Path::new("/home/me/.codex/sessions/abc.jsonl"),
+            &repo,
+            &rules
+        ));
+        assert!(should_ignore_event_path(
+            Path::new("/home/me/.codex/skills/.system/openai/SKILL.md"),
+            &repo,
+            &rules
         ));
     }
 

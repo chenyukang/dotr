@@ -146,12 +146,12 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("backup")).unwrap();
         fs::write(
-            dir.path().join("backup/oops.txt"),
+            dir.path().join("oops.txt"),
             "AGE-SECRET-KEY-1THISSHOULDNOTBEINGIT",
         )
         .unwrap();
 
         let found = find_age_secret(dir.path()).unwrap();
-        assert_eq!(found, Some(dir.path().join("backup/oops.txt")));
+        assert_eq!(found, Some(dir.path().join("oops.txt")));
     }
 }

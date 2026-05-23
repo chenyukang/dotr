@@ -7,25 +7,106 @@ use anyhow::{Context, Result, bail};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_STORE_DIR: &str = "backup";
+pub const DEFAULT_STORE_DIR: &str = ".";
 pub const CONFIG_FILE_NAME: &str = "dotr.toml";
 pub const INDEX_FILE: &str = "metadata/index.json";
+
+pub const STARTER_PATHS: &[&str] = &[
+    "~/.bash_profile",
+    "~/.bashrc",
+    "~/.profile",
+    "~/.zprofile",
+    "~/.zshenv",
+    "~/.zshrc",
+    "~/.inputrc",
+    "~/.editorconfig",
+    "~/.gitconfig",
+    "~/.gitignore_global",
+    "~/.ssh/config",
+    "~/.gnupg/gpg.conf",
+    "~/.gnupg/gpg-agent.conf",
+    "~/.tmux.conf",
+    "~/.vimrc",
+    "~/.ideavimrc",
+    "~/.config/git",
+    "~/.config/fish",
+    "~/.config/nvim",
+    "~/.config/helix",
+    "~/.config/starship.toml",
+    "~/.config/alacritty",
+    "~/.config/ghostty",
+    "~/.config/kitty",
+    "~/.config/wezterm",
+    "~/.config/bat",
+    "~/.config/direnv",
+    "~/.cargo/config.toml",
+];
 
 pub const DEFAULT_EXCLUDES: &[&str] = &[
     "**/.git/**",
     "**/.DS_Store",
     "**/__pycache__/**",
+    "**/.cache/**",
+    "**/cache",
+    "**/cache/**",
+    "**/caches",
+    "**/caches/**",
+    "**/.tmp/**",
+    "**/tmp",
+    "**/tmp/**",
+    "**/temp",
+    "**/temp/**",
+    "**/log",
+    "**/log/**",
+    "**/logs",
+    "**/logs/**",
+    "**/sessions",
+    "**/sessions/**",
+    "**/archived_sessions",
+    "**/archived_sessions/**",
+    "**/browser/sessions",
+    "**/browser/sessions/**",
+    "**/shell_snapshots",
+    "**/shell_snapshots/**",
+    "**/worktrees",
+    "**/worktrees/**",
+    "**/targets",
+    "**/targets/**",
+    "**/target",
+    "**/target/**",
+    "**/generated_images",
+    "**/generated_images/**",
+    "**/ambient-suggestions",
+    "**/ambient-suggestions/**",
+    "**/node_repl",
+    "**/node_repl/**",
+    "**/vendor_imports",
+    "**/vendor_imports/**",
+    "**/plugins/cache",
+    "**/plugins/cache/**",
     "**/node_modules/**",
     "**/.venv/**",
     "**/venv/**",
     "**/.env",
     "**/.env.*",
+    "**/auth.json",
+    "**/credentials.json",
     "**/*.pem",
     "**/*.key",
     "**/*.db",
     "**/*.sqlite",
+    "**/*.sqlite-*",
+    "**/*.sqlite3",
+    "**/*.sqlite3-*",
     "**/*.log",
     "**/*.pyc",
+    "**/*.tmp",
+    "**/*.tmp-*",
+    "**/.*.tmp-*",
+    "**/*.bak",
+    "**/*.bak.*",
+    "**/.*.bak",
+    "**/.*.bak*",
     "**/references/llms*.md",
 ];
 
@@ -33,10 +114,12 @@ pub const DEFAULT_EXCLUDES: &[&str] = &[
 pub struct Config {
     #[serde(default)]
     pub repository: RepositoryConfig,
-    #[serde(default, rename = "path")]
+    #[serde(default, rename = "path", skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<PathConfig>,
     #[serde(default)]
     pub watch: WatchConfig,
+    #[serde(default, skip_serializing_if = "is_default_daemon_config")]
+    pub daemon: DaemonConfig,
     #[serde(default)]
     pub git: GitConfig,
     #[serde(default)]
@@ -65,9 +148,15 @@ impl Default for RepositoryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PathConfig {
     pub src: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude: Vec<String>,
-    #[serde(default)]
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub follow_symlink: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_binary_file: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub encrypt: bool,
 }
 
@@ -89,6 +178,20 @@ impl Default for WatchConfig {
             min_backup_interval_secs: default_min_backup_interval_secs(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_log: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_log: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -156,6 +259,12 @@ impl Config {
         toml::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
     }
 
+    pub fn write(&self, repo_root: &Path) -> Result<()> {
+        let path = config_path(repo_root);
+        let toml = toml::to_string_pretty(self).context("failed to serialize config")?;
+        fs::write(&path, toml).with_context(|| format!("failed to write {}", path.display()))
+    }
+
     pub fn store_dir(&self, repo_root: &Path) -> PathBuf {
         if self.repository.store.is_absolute() {
             self.repository.store.clone()
@@ -176,36 +285,29 @@ impl Config {
         let mut config = Self::default();
 
         if with_defaults {
-            config.paths = vec![
-                PathConfig {
-                    src: "~/.codex".to_string(),
-                    exclude: Vec::new(),
-                    encrypt: false,
-                },
-                PathConfig {
-                    src: "~/.agents".to_string(),
-                    exclude: Vec::new(),
-                    encrypt: false,
-                },
-                PathConfig {
-                    src: "~/.hermes".to_string(),
-                    exclude: Vec::new(),
-                    encrypt: false,
-                },
-                PathConfig {
-                    src: "~/code/bin".to_string(),
-                    exclude: Vec::new(),
-                    encrypt: false,
-                },
-            ];
+            config.paths = starter_paths();
         }
 
         config
     }
 }
 
+pub fn starter_paths() -> Vec<PathConfig> {
+    STARTER_PATHS
+        .iter()
+        .map(|src| PathConfig {
+            src: (*src).to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            encrypt: false,
+        })
+        .collect()
+}
+
 pub fn config_path(repo_root: &Path) -> PathBuf {
-    repo_root.join(DEFAULT_STORE_DIR).join(CONFIG_FILE_NAME)
+    repo_root.join(CONFIG_FILE_NAME)
 }
 
 pub fn index_path(store_dir: &Path) -> PathBuf {
@@ -275,6 +377,22 @@ fn default_max_file_size() -> String {
     "20MiB".to_string()
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+fn is_default_daemon_config(value: &DaemonConfig) -> bool {
+    value == &DaemonConfig::default()
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,10 +409,20 @@ mod tests {
     fn default_excludes_match_secret_like_files() {
         let set = default_exclude_set().unwrap();
 
-        assert!(set.is_match("/tmp/home/app/.env"));
-        assert!(set.is_match("/tmp/home/app/private.key"));
-        assert!(set.is_match("/tmp/home/app/references/llms-full.md"));
-        assert!(!set.is_match("/tmp/home/app/config.toml"));
+        assert!(set.is_match("app/.env"));
+        assert!(set.is_match("app/private.key"));
+        assert!(set.is_match("app/references/llms-full.md"));
+        assert!(set.is_match(".codex/cache/item.json"));
+        assert!(set.is_match(".codex/sessions/2026/05/session.jsonl"));
+        assert!(set.is_match(".codex/plugins/cache/openai-bundled/tool"));
+        assert!(set.is_match(".codex/logs_2.sqlite-wal"));
+        assert!(set.is_match(".codex/auth.json"));
+        assert!(set.is_match(".codex/generated_images/abc/image.png"));
+        assert!(set.is_match(".codex/worktrees/abcd/repo/Cargo.toml"));
+        assert!(!set.is_match("app/config.toml"));
+        assert!(!set.is_match(".codex/AGENTS.md"));
+        assert!(!set.is_match(".codex/config.toml"));
+        assert!(!set.is_match(".codex/rules/default.rules"));
     }
 
     #[test]
@@ -302,18 +430,52 @@ mod tests {
         let config: Config = toml::from_str(
             r#"
             [[path]]
-            src = "~/.codex"
+            src = "~/.config/nvim"
 
             [[path]]
             src = "/Library/example"
             encrypt = true
+            follow_symlink = false
+            include_binary_file = true
+            include = ["config/**"]
             exclude = ["**/tmp/**"]
+
+            [daemon]
+            log_path = "~/logs/dotr-watch.jsonl"
+            log_level = "debug"
             "#,
         )
         .unwrap();
 
         assert_eq!(config.paths.len(), 2);
         assert!(config.paths[1].encrypt);
+        assert!(!config.paths[1].follow_symlink);
+        assert!(config.paths[1].include_binary_file);
+        assert_eq!(config.paths[1].include, vec!["config/**"]);
         assert_eq!(config.watch.debounce_secs, 30);
+        assert_eq!(
+            config.daemon.log_path.as_deref(),
+            Some("~/logs/dotr-watch.jsonl")
+        );
+        assert_eq!(config.daemon.log_level.as_deref(), Some("debug"));
+    }
+
+    #[test]
+    fn starter_paths_are_generic_and_not_personal() {
+        let config = Config::starter(true);
+        let sources = config
+            .paths
+            .iter()
+            .map(|path| path.src.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(sources.contains(&"~/.zshrc"));
+        assert!(sources.contains(&"~/.gitconfig"));
+        assert!(sources.contains(&"~/.ssh/config"));
+        assert!(sources.contains(&"~/.config/nvim"));
+        assert!(!sources.contains(&"~/projects/bin"));
+        assert!(!sources.contains(&"~/.custom-personal-tool"));
+        assert!(config.paths.iter().all(|path| path.follow_symlink));
+        assert!(config.paths.iter().all(|path| !path.include_binary_file));
     }
 }
