@@ -1052,6 +1052,7 @@ mod tests {
         assert_eq!(second.added + second.updated + second.deleted, 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn root_store_directory_is_created_on_demand() {
         let home_dir = tempdir().unwrap();
