@@ -59,7 +59,7 @@
             </div>
             <div class="hero-actions" aria-label="Primary actions">
               <a class="button primary" href="#commands">Commands</a>
-              <a class="button secondary" href="../README.md">README</a>
+              <a class="button secondary" href="https://github.com/chenyukang/dotr/blob/main/README.md">README</a>
             </div>
           </div>
           <div class="hero-commands" aria-label="Most common dotr commands">
@@ -202,14 +202,35 @@
         <pre class="code-panel"><code><span class="sh-prompt">$</span> <span class="sh-bin">cd</span> <span class="sh-path">~/dotbackup</span>
 <span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">keygen</span>
 <span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">add</span> <span class="sh-flag">--encrypt</span> <span class="sh-path">~/.ssh/config</span></code></pre>
+        <div class="keygen-detail-grid">
+          <div>
+            <p class="code-caption"><code>dotr keygen</code> creates credentials firstly:</p>
+            <div class="code-panel keygen-files" role="list">
+              <div class="keygen-file-row" role="listitem">
+                <code class="sh-path">~/.config/dotr/identity</code>
+                <span class="tok-comment">private key</span>
+              </div>
+              <div class="keygen-file-row" role="listitem">
+                <code class="sh-path">~/dotbackup/recipients</code>
+                <span class="tok-comment">public recipient</span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <p class="code-caption">then writes this to <code>dotr.toml</code>:</p>
+            <pre class="code-panel"><code><span class="tok-section">[encryption]</span>
+<span class="tok-key">backend</span> <span class="tok-op">=</span> <span class="tok-string">"age"</span>
+<span class="tok-key">recipients_file</span> <span class="tok-op">=</span> <span class="tok-string">"recipients"</span>
+<span class="tok-key">identity</span> <span class="tok-op">=</span> <span class="tok-string">"~/.config/dotr/identity"</span></code></pre>
+          </div>
+        </div>
         <p class="code-caption security-note">
           <code>identity</code> is the private key: treat it like a password and
           keep it out of the backup Git repo. <code>recipients</code> is the
           public age recipient and is safe to commit.
         </p>
         <p class="code-caption">
-          <code>keygen</code> writes the encryption config for you. Encrypted
-          path entries stay explicit and auditable:
+          After that, encrypted path entries stay explicit and auditable:
         </p>
         <pre class="code-panel"><code><span class="tok-section">[[path]]</span>
 <span class="tok-key">src</span> <span class="tok-op">=</span> <span class="tok-string">"~/.ssh/config"</span>

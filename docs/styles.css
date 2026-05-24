@@ -423,12 +423,45 @@ h3 {
   color: var(--amber);
 }
 
+.tok-comment {
+  color: var(--dim);
+}
+
 .tok-bool {
   color: var(--magenta);
 }
 
 .encryption-section .code-panel + .code-panel {
   margin-top: 14px;
+}
+
+.keygen-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 14px;
+  max-width: 1160px;
+  margin: 0 auto;
+}
+
+.keygen-detail-grid .code-panel {
+  margin: 0;
+}
+
+.keygen-files {
+  display: grid;
+  gap: 6px;
+}
+
+.keygen-file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 136px;
+  gap: 18px;
+  align-items: baseline;
+}
+
+.keygen-file-row code,
+.keygen-file-row span {
+  min-width: 0;
 }
 
 .code-caption {
@@ -498,6 +531,7 @@ h3 {
   }
 
   .signal-grid,
+  .keygen-detail-grid,
   .workflow {
     grid-template-columns: 1fr 1fr;
   }
@@ -556,6 +590,7 @@ h3 {
   }
 
   .signal-grid,
+  .keygen-detail-grid,
   .workflow {
     grid-template-columns: 1fr;
   }
@@ -566,5 +601,10 @@ h3 {
 
   .code-panel {
     font-size: 0.78rem;
+  }
+
+  .keygen-file-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
   }
 }
