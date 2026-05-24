@@ -254,21 +254,22 @@ impl CustomBackupConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct WatchConfig {
-    #[serde(default)]
-    pub enabled: bool,
     #[serde(default = "default_debounce_secs")]
     pub debounce_secs: u64,
-    #[serde(default = "default_min_backup_interval_secs")]
-    pub min_backup_interval_secs: u64,
+    #[serde(
+        default = "default_backup_interval_secs",
+        alias = "min_backup_interval_secs"
+    )]
+    pub backup_interval_secs: u64,
 }
 
 impl Default for WatchConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             debounce_secs: default_debounce_secs(),
-            min_backup_interval_secs: default_min_backup_interval_secs(),
+            backup_interval_secs: default_backup_interval_secs(),
         }
     }
 }
@@ -288,6 +289,7 @@ pub struct DaemonConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct GitConfig {
     #[serde(default)]
     pub auto_commit: bool,
@@ -295,8 +297,6 @@ pub struct GitConfig {
     pub auto_push: bool,
     #[serde(default = "default_commit_message")]
     pub commit_message: String,
-    #[serde(default)]
-    pub include_unrelated: bool,
 }
 
 impl Default for GitConfig {
@@ -305,7 +305,6 @@ impl Default for GitConfig {
             auto_commit: false,
             auto_push: false,
             commit_message: default_commit_message(),
-            include_unrelated: false,
         }
     }
 }
@@ -387,6 +386,7 @@ impl Config {
 
     pub fn starter(with_defaults: bool) -> Self {
         let mut config = Self::default();
+        config.git.auto_commit = true;
 
         if with_defaults {
             config.path_sets = starter_path_sets();
@@ -625,8 +625,8 @@ fn default_debounce_secs() -> u64 {
     30
 }
 
-fn default_min_backup_interval_secs() -> u64 {
-    900
+fn default_backup_interval_secs() -> u64 {
+    300
 }
 
 fn default_commit_message() -> String {
@@ -733,11 +733,42 @@ mod tests {
         assert!(config.paths[1].force);
         assert_eq!(config.paths[1].include, vec!["config/**"]);
         assert_eq!(config.watch.debounce_secs, 30);
+        assert_eq!(config.watch.backup_interval_secs, 300);
         assert_eq!(
             config.daemon.log_path.as_deref(),
             Some("~/logs/dotr-watch.log")
         );
         assert_eq!(config.daemon.log_level.as_deref(), Some("debug"));
+    }
+
+    #[test]
+    fn watch_accepts_legacy_min_backup_interval_name() {
+        let config: Config = toml::from_str(
+            r#"
+            [watch]
+            min_backup_interval_secs = 42
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.watch.backup_interval_secs, 42);
+
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(serialized.contains("backup_interval_secs = 42"));
+        assert!(!serialized.contains("min_backup_interval_secs"));
+    }
+
+    #[test]
+    fn watch_enabled_is_rejected() {
+        let err = toml::from_str::<Config>(
+            r#"
+            [watch]
+            enabled = true
+            "#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("unknown field `enabled`"));
     }
 
     #[test]

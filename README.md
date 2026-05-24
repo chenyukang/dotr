@@ -100,9 +100,8 @@ restore = "brew bundle --file ~/.config/homebrew/Brewfile"
 paths = ["~/.config/homebrew/Brewfile"]
 
 [watch]
-enabled = true
 debounce_secs = 30
-min_backup_interval_secs = 900
+backup_interval_secs = 300
 
 [daemon]
 log_path = "~/.local/state/dotr/dotr-watch.log"
@@ -183,6 +182,8 @@ dotr backup [--dry-run] [--no-delete] [--no-git] [--commit] [--push]
 
 `dotr backup` prints progress updates to stderr while it scans configured
 sources, checks deletions, writes metadata, and runs optional Git steps.
+When Git auto-commit is enabled, dotr stages and commits only dotr-managed
+paths: `dotr.toml`, `files/`, `metadata/`, `recipients`, and `.gitignore`.
 
 Add a source path and immediately back it up:
 

@@ -235,9 +235,8 @@ restore = "brew bundle --file ~/.config/homebrew/Brewfile"
 paths = ["~/.config/homebrew/Brewfile"]
 
 [watch]
-enabled = true
 debounce_secs = 30
-min_backup_interval_secs = 900
+backup_interval_secs = 300
 
 [daemon]
 log_path = "~/.local/state/dotr/dotr-watch.log"
@@ -245,7 +244,7 @@ log_level = "info"
 
 [git]
 auto_commit = true
-auto_push = true
+auto_push = false
 commit_message = "chore(dotr): automated backup"
 
 [encryption]
@@ -606,7 +605,7 @@ Behavior:
 3. Debounce bursts of changes.
 4. Acquire a process lock.
 5. Run the same Rust backup pipeline as `dotr backup`.
-6. Enforce `min_backup_interval_secs` for Git commits.
+6. Enforce `backup_interval_secs` for watch-triggered backups.
 7. Log actions and failures.
 
 The watcher must ignore changes inside the backup repository itself unless the
@@ -639,6 +638,12 @@ Behavior:
   outside `metadata/index.json` entries are preserved, scoped deletions only
   remove entries under the changed path, and only matching custom backup
   commands run.
+- Watch-triggered backups are throttled by `backup_interval_secs`.
+- Events caused by `dotr` rewriting configured `custom_backup` outputs are
+  ignored briefly after the backup completes to prevent self-trigger loops.
+- `watch.enabled` has been removed. `dotr watch` and `dotr daemon start` decide
+  whether watching is active. Older configs that contain the field should delete
+  it.
 - `stop` reads the pid file and sends `SIGTERM`.
 - `restart` runs `stop`, then uses the same repository resolution and config
   refresh behavior as `start`.
@@ -669,9 +674,9 @@ dotr backup --commit --push
 Commit rules:
 
 - Commit only when backup files or metadata changed.
-- Do not commit unrelated repository changes by default.
-- If unrelated changes exist, fail with a clear message unless
-  `git.include_unrelated = true`.
+- Auto-commit only stages dotr-managed paths.
+- If non-dotr paths are already staged, fail with a clear message instead of
+  committing them accidentally.
 - Commit message should include timestamp and a short change summary.
 - If push fails, keep the local commit and report the failure.
 

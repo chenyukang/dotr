@@ -368,7 +368,7 @@ fn finish_git(
             backup::change_summary(backup)
         );
         progress.phase("committing git changes");
-        CommandGit.commit_backup(repo_root, &message, config.git.include_unrelated)?;
+        CommandGit.commit_backup(repo_root, &message)?;
     }
 
     if push || config.git.auto_push {

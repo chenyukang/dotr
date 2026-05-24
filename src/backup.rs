@@ -191,7 +191,7 @@ pub(crate) fn run_with_config_and_progress(
                 change_summary(&report)
             );
             progress.phase("committing git changes");
-            git.commit_backup(repo_root, &message, config.git.include_unrelated)?;
+            git.commit_backup(repo_root, &message)?;
         }
 
         let wants_push = options.push || config.git.auto_push;
@@ -935,12 +935,7 @@ mod tests {
             Ok(())
         }
 
-        fn commit_backup(
-            &self,
-            _repo_root: &Path,
-            _message: &str,
-            _include_unrelated: bool,
-        ) -> Result<()> {
+        fn commit_backup(&self, _repo_root: &Path, _message: &str) -> Result<()> {
             self.commits.set(self.commits.get() + 1);
             Ok(())
         }

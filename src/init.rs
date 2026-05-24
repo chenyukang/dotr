@@ -174,6 +174,14 @@ mod tests {
         assert!(!toml.contains("encrypt = false"));
         assert!(!toml.contains("force = false"));
         assert!(!toml.contains("include_binary_file = false"));
+        assert!(!toml.contains("enabled = "));
+        assert!(toml.contains("[watch]"));
+        assert!(toml.contains("debounce_secs = 30"));
+        assert!(toml.contains("backup_interval_secs = 300"));
+        assert!(toml.contains("[git]"));
+        assert!(toml.contains("auto_commit = true"));
+        assert!(toml.contains("auto_push = false"));
+        assert!(toml.contains("commit_message = \"chore(dotr): automated backup\""));
         assert!(toml.contains("[[path_set]]"));
         assert!(!toml.contains("[[path]]"));
         assert!(toml.contains("backup = "));
@@ -195,5 +203,9 @@ mod tests {
 
         assert!(!toml.contains("path = []"));
         assert!(!toml.contains("custom_backup = []"));
+        assert!(!toml.contains("enabled = "));
+        assert!(toml.contains("backup_interval_secs = 300"));
+        assert!(toml.contains("auto_commit = true"));
+        assert!(toml.contains("auto_push = false"));
     }
 }
