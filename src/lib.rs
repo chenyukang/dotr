@@ -10,6 +10,7 @@ pub mod git;
 pub mod hash;
 pub mod index;
 pub mod init;
+pub mod keygen;
 pub mod manage;
 pub mod paths;
 pub mod progress;
@@ -17,6 +18,7 @@ pub mod repo;
 pub mod restore;
 pub mod status;
 pub mod structured_log;
+pub mod terminal;
 pub mod watch;
 
 pub type Result<T> = anyhow::Result<T>;

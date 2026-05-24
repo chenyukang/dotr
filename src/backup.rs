@@ -76,7 +76,7 @@ pub fn run_with_config(
     run_with_config_and_progress(repo_root, env, config, options, git, &mut progress)
 }
 
-fn run_with_config_and_progress(
+pub(crate) fn run_with_config_and_progress(
     repo_root: &Path,
     env: &Environment,
     config: &Config,
@@ -335,7 +335,13 @@ fn process_path_candidate(
             .follow_links(path_config.follow_symlink)
             .into_iter()
             .filter_entry(|entry| {
-                !is_excluded(entry.path(), source_root, default_excludes, local_excludes)
+                !is_excluded(
+                    entry.path(),
+                    source_root,
+                    default_excludes,
+                    local_excludes,
+                    path_config.force,
+                )
             })
         {
             let entry = match entry {
@@ -375,12 +381,19 @@ fn process_path_candidate(
                 path_config.encrypt,
                 path_config.follow_symlink,
                 path_config.include_binary_file,
+                path_config.force,
                 max_file_size,
                 recipients,
                 dry_run,
             )?;
         }
-    } else if is_excluded(candidate, source_root, default_excludes, local_excludes) {
+    } else if is_excluded(
+        candidate,
+        source_root,
+        default_excludes,
+        local_excludes,
+        path_config.force,
+    ) {
         report.visited += 1;
         report.skipped += 1;
         report
@@ -409,6 +422,7 @@ fn process_path_candidate(
             path_config.encrypt,
             path_config.follow_symlink,
             path_config.include_binary_file,
+            path_config.force,
             max_file_size,
             recipients,
             dry_run,
@@ -451,6 +465,7 @@ fn process_entry(
     encrypted: bool,
     follow_symlink: bool,
     include_binary_file: bool,
+    force: bool,
     max_file_size: u64,
     recipients: Option<&[age::x25519::Recipient]>,
     dry_run: bool,
@@ -460,21 +475,21 @@ fn process_entry(
     let file_type = metadata.file_type();
     let mode = unix_mode(&metadata);
 
-    if file_type.is_file() && metadata.len() > max_file_size {
+    if file_type.is_file() && !force && !include_binary_file && is_binary_file(source)? {
+        report.skipped += 1;
+        report
+            .actions
+            .push(format!("skip binary {}", source.display()));
+        return Ok(());
+    }
+
+    if file_type.is_file() && !force && metadata.len() > max_file_size {
         report.skipped += 1;
         report.actions.push(format!(
             "skip oversized {} ({} bytes)",
             source.display(),
             metadata.len()
         ));
-        return Ok(());
-    }
-
-    if file_type.is_file() && !include_binary_file && is_binary_file(source)? {
-        report.skipped += 1;
-        report
-            .actions
-            .push(format!("skip binary {}", source.display()));
         return Ok(());
     }
 
@@ -546,6 +561,7 @@ fn process_entry(
         }
 
         report.encrypted += 1;
+        warn_if_previously_plaintext(previous, &index_entry, report);
         if !dry_run {
             let recipients = recipients.context("encrypted paths require age recipients")?;
             let plaintext =
@@ -683,7 +699,7 @@ fn remove_empty_orphan_dirs(
     }
 
     for dir in dirs {
-        if dir == files_dir || dir == files_dir.join("home") || dir == files_dir.join("absolute") {
+        if dir == files_dir || dir == files_dir.join("home") || dir == files_dir.join("root") {
             continue;
         }
 
@@ -704,14 +720,20 @@ fn remove_empty_orphan_dirs(
     Ok(())
 }
 
-fn is_excluded(path: &Path, source_root: &Path, default: &GlobSet, local: &GlobSet) -> bool {
+fn is_excluded(
+    path: &Path,
+    source_root: &Path,
+    default: &GlobSet,
+    local: &GlobSet,
+    force: bool,
+) -> bool {
     let rel = path.strip_prefix(source_root).unwrap_or(path);
-    default.is_match(rel)
+    (!force && default.is_match(rel))
         || local.is_match(path)
         || local.is_match(rel)
-        || path
-            .file_name()
-            .is_some_and(|file_name| default.is_match(file_name) || local.is_match(file_name))
+        || path.file_name().is_some_and(|file_name| {
+            (!force && default.is_match(file_name)) || local.is_match(file_name)
+        })
 }
 
 fn should_walk_source(source: &Path, follow_symlink: bool) -> Result<bool> {
@@ -757,6 +779,25 @@ fn record_change(
         }
         Some(_) => report.unchanged += 1,
     }
+}
+
+fn warn_if_previously_plaintext(
+    previous: &Index,
+    next_entry: &IndexEntry,
+    report: &mut BackupReport,
+) {
+    if !next_entry.encrypted
+        || !previous.entries.iter().any(|entry| {
+            entry.source == next_entry.source && entry.kind == EntryKind::File && !entry.encrypted
+        })
+    {
+        return;
+    }
+
+    report.actions.push(format!(
+        "warning: {} was previously backed up as plaintext; Git history may still contain plaintext. Rotate exposed secrets or rewrite history before publishing.",
+        next_entry.source
+    ));
 }
 
 fn file_entry_unchanged_ignoring_mtime(prev: &IndexEntry, next: &IndexEntry) -> bool {
@@ -851,7 +892,7 @@ fn remove_if_exists(path: &Path) -> Result<()> {
     }
 }
 
-fn change_summary(report: &BackupReport) -> String {
+pub(crate) fn change_summary(report: &BackupReport) -> String {
     if !report.changed() {
         return "pending managed changes".to_string();
     }
@@ -973,6 +1014,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1011,6 +1053,46 @@ mod tests {
     }
 
     #[test]
+    fn root_store_directory_is_created_on_demand() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        let absolute_root = tempdir().unwrap();
+        let source = absolute_root.path().join("Library/example/hello/world");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, "absolute").unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: source.to_string_lossy().into_owned(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            force: false,
+            encrypt: false,
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+        assert!(!repo.path().join("files/root").exists());
+
+        run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &CommandGit,
+        )
+        .unwrap();
+
+        let stored = source_to_stored(&source, &env, false).unwrap();
+        assert!(repo.path().join(stored.relative).is_file());
+        assert!(repo.path().join("files/root").is_dir());
+    }
+
+    #[test]
     fn scoped_backup_updates_changed_file_without_scanning_unrelated_sources() {
         let home_dir = tempdir().unwrap();
         let home = home_dir.path();
@@ -1028,6 +1110,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         config.paths.push(PathConfig {
@@ -1036,6 +1119,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1112,6 +1196,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         config.paths.push(PathConfig {
@@ -1120,6 +1205,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1199,6 +1285,7 @@ mod tests {
                 exclude: Vec::new(),
                 follow_symlink: true,
                 include_binary_file: false,
+                force: false,
                 encrypt: false,
             }],
             ..CustomBackupConfig::default()
@@ -1213,6 +1300,7 @@ mod tests {
                 exclude: Vec::new(),
                 follow_symlink: true,
                 include_binary_file: false,
+                force: false,
                 encrypt: false,
             }],
             ..CustomBackupConfig::default()
@@ -1273,6 +1361,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1361,6 +1450,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1431,6 +1521,7 @@ mod tests {
                 exclude: Vec::new(),
                 follow_symlink: true,
                 include_binary_file: false,
+                force: false,
                 encrypt: false,
             }],
             ..CustomBackupConfig::default()
@@ -1479,6 +1570,7 @@ mod tests {
                 exclude: Vec::new(),
                 follow_symlink: true,
                 include_binary_file: false,
+                force: false,
                 encrypt: false,
             }],
             ..CustomBackupConfig::default()
@@ -1523,6 +1615,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1563,6 +1656,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1615,6 +1709,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1660,6 +1755,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1688,6 +1784,96 @@ mod tests {
     }
 
     #[test]
+    fn skips_binary_before_oversized() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join("assets")).unwrap();
+        fs::write(home.join("assets/big.bin"), [0_u8, 1, 2, 3]).unwrap();
+
+        let mut config = Config::default();
+        config.policy.max_file_size = "3B".to_string();
+        config.paths.push(PathConfig {
+            src: "~/assets".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            force: false,
+            encrypt: false,
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+
+        let report = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &CommandGit,
+        )
+        .unwrap();
+
+        assert!(
+            report
+                .actions
+                .iter()
+                .any(|action| action.contains("skip binary"))
+        );
+        assert!(
+            !report
+                .actions
+                .iter()
+                .any(|action| action.contains("skip oversized"))
+        );
+    }
+
+    #[test]
+    fn force_path_bypasses_default_exclude_binary_and_size_checks() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join("logs")).unwrap();
+        fs::write(home.join("logs/app.log"), [0_u8, 1, 2, 3]).unwrap();
+
+        let mut config = Config::default();
+        config.policy.max_file_size = "3B".to_string();
+        config.paths.push(PathConfig {
+            src: "~/logs/app.log".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            force: true,
+            encrypt: false,
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+
+        let report = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &CommandGit,
+        )
+        .unwrap();
+
+        assert_eq!(report.added, 1);
+        assert!(
+            !report
+                .actions
+                .iter()
+                .any(|action| action.starts_with("skip "))
+        );
+        assert!(repo.path().join("files/home/logs/app.log").is_file());
+    }
+
+    #[test]
     fn include_binary_file_allows_included_binary_files() {
         let home_dir = tempdir().unwrap();
         let home = home_dir.path();
@@ -1703,6 +1889,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: true,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1741,6 +1928,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1797,6 +1985,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1842,6 +2031,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: true,
         });
         fs::write(
@@ -1888,6 +2078,58 @@ mod tests {
         .unwrap();
     }
 
+    #[test]
+    fn encrypting_previous_plaintext_backup_warns_about_git_history() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join(".ssh")).unwrap();
+        fs::write(home.join(".ssh/config"), "Host internal").unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: "~/.ssh/config".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            force: false,
+            encrypt: false,
+        });
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+        let options = BackupOptions {
+            no_git: true,
+            ..BackupOptions::default()
+        };
+
+        run_with_config(repo.path(), &env, &config, &options, &CommandGit).unwrap();
+        assert!(repo.path().join("files/home/.ssh/config").is_file());
+
+        let identity = age::x25519::Identity::generate();
+        fs::write(
+            repo.path().join("recipients"),
+            identity.to_public().to_string(),
+        )
+        .unwrap();
+        config.encryption.recipients_file = Some("recipients".to_string());
+        config.paths[0].encrypt = true;
+        fs::write(
+            repo.path().join("dotr.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+
+        let report = run_with_config(repo.path(), &env, &config, &options, &CommandGit).unwrap();
+
+        assert!(report.actions.iter().any(|action| {
+            action.contains("warning:")
+                && action.contains("previously backed up as plaintext")
+                && action.contains("Git history")
+        }));
+        assert!(repo.path().join("files/home/.ssh/config.age").is_file());
+        assert!(!repo.path().join("files/home/.ssh/config").exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinks_are_followed_by_default() {
@@ -1904,6 +2146,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1950,6 +2193,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);
@@ -1993,6 +2237,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: false,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = repo_with_config(home, &config);

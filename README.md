@@ -105,7 +105,7 @@ Examples:
 ```sh
 dotr --repo ~/dotbackup backup
 dotr -C ~/dotbackup status
-DOTR_REPO=~/dotbackup dotr doctor
+DOTR_REPO=~/dotbackup dotr check
 dotr config set default_repo ~/dotbackup
 dotr repo
 ```
@@ -124,7 +124,6 @@ default_repo = "/Users/alice/dotbackup"
 dotr.toml
 files/
   home/
-  absolute/
 metadata/
   index.json
 ```
@@ -136,12 +135,14 @@ Home paths are stored under `files/home`:
 => files/home/.zshrc
 ```
 
-Absolute paths outside `$HOME` are stored under `files/absolute`:
+Absolute paths outside `$HOME` are stored under `files/root`:
 
 ```text
 /Library/example/hello/world
-=> files/absolute/Library/example/hello/world
+=> files/root/Library/example/hello/world
 ```
+
+`files/root` is created only after the first absolute path is backed up.
 
 ## Configuration
 
@@ -154,6 +155,7 @@ items = [
   ".gitconfig",
   { src = ".config/nvim", include = ["init.lua", "lua/**", "after/**"] },
   { src = ".config/some-app", include = ["config.toml", "assets/**"], include_binary_file = true },
+  { src = ".local/state/app/activity.log", force = true },
 ]
 
 [[path]]
@@ -182,8 +184,8 @@ commit_message = "chore(dotr): automated backup"
 
 [encryption]
 backend = "age"
-recipients_file = "recipients.txt"
-identity = "~/.config/dotr/age.key"
+recipients_file = "recipients"
+identity = "~/.config/dotr/identity"
 
 [policy]
 max_file_size = "20MiB"
@@ -220,6 +222,11 @@ during backup and restore.
 Binary files are skipped by default. If a configured path intentionally needs
 binary assets, set `include_binary_file = true` on that `[[path]]`; include and
 exclude rules still apply first.
+
+Use `force = true` only for explicit files or directories that must bypass
+dotr's default policy. It ignores default excludes, binary detection, and
+`max_file_size` for that configured path. Explicit `include` and `exclude`
+rules still apply.
 
 Symlinks are followed by default so copy-based backups capture the target
 contents at the configured path. To preserve symlink metadata instead, opt out
@@ -361,6 +368,16 @@ Some starter entries use `include` rules. For example, `~/.config/gh` backs up
 keybindings, tasks, snippets, and the generated extension list instead of the
 whole `User` directory.
 
+Generate encryption key material:
+
+```sh
+dotr keygen [--force]
+```
+
+This writes `~/.config/dotr/identity`, writes `recipients` in the dotr
+repository, and updates `[encryption]` in `dotr.toml`. Existing key files are
+not overwritten unless you confirm with `y` or pass `--force`.
+
 Run one backup pass:
 
 ```sh
@@ -374,13 +391,26 @@ Add a source path and immediately back it up:
 
 ```sh
 dotr add ~/.config/yazi
+dotr add --encrypt ~/.npmrc
+dotr add --force /Library/Logs/MCXTools.log
 ```
+
+`PATH` may be a file or directory. Use `--encrypt` for secret-bearing paths.
+Use `--force` for intentional files that default policy would normally skip,
+such as `.log`, binary, or oversized files.
+If encryption is not configured yet, `dotr add --encrypt` fails before editing
+`dotr.toml` and prints the `[encryption]` snippet plus the key setup commands.
+The backup pass is scoped to the added path.
+If the scoped backup would store nothing, `dotr add` fails without editing
+`dotr.toml`, prints the skip reason, and gives a `dotr add --force PATH` hint.
 
 Remove a source path and immediately delete its backed-up files:
 
 ```sh
 dotr remove ~/.config/yazi
 ```
+
+The cleanup pass is scoped to the removed path.
 
 Show pending backup changes without writing:
 
@@ -391,7 +421,7 @@ dotr status
 Restore files:
 
 ```sh
-dotr restore [--dry-run] [--apply] [--force] [--allow-absolute] [TARGETS]...
+dotr restore [--dry-run] [--apply] [--force] [--allow-absolute] [-o PATH] [--diff] [TARGETS]...
 ```
 
 Run the filesystem watcher:
@@ -447,8 +477,10 @@ payload.
 Check the repository and config:
 
 ```sh
-dotr doctor
+dotr check
 ```
+
+`dotr doctor` remains available as a compatibility alias.
 
 Print the resolved repository:
 
@@ -462,9 +494,47 @@ Set the user-level default repository:
 dotr config set default_repo ~/dotbackup
 ```
 
+Generate age key material for encrypted backups:
+
+```sh
+cd ~/dotbackup
+dotr keygen
+```
+
 ## Encryption
 
 Set `encrypt = true` on a path to store it as an age-encrypted `.age` file.
+`dotr` uses its built-in Rust age implementation for key generation, backup,
+and restore, so the `age` command does not need to be installed.
+
+Generate key material once:
+
+```sh
+cd ~/dotbackup
+dotr keygen
+```
+
+This creates `~/.config/dotr/identity`, creates `recipients` in the dotr
+repository, and writes the `[encryption]` section in `dotr.toml`.
+
+If either key file already exists, `dotr keygen` asks before overwriting it.
+Only an exact `y` confirmation continues. Use `dotr keygen --force` to overwrite
+without prompting.
+
+Treat `~/.config/dotr/identity` like a password/private key: do not commit it to
+the backup repository. The `recipients` file contains the public age recipient
+and is safe to commit.
+
+`dotr keygen` writes this config:
+
+```toml
+[encryption]
+backend = "age"
+recipients_file = "recipients"
+identity = "~/.config/dotr/identity"
+```
+
+Then mark only the sensitive paths that should be encrypted:
 
 ```toml
 [[path]]
@@ -472,11 +542,20 @@ src = "~/.ssh/config"
 encrypt = true
 ```
 
-`recipients_file` contains public age recipients used for backup encryption.
-`identity` points to the private age identity used for restore decryption.
+When any configured path has `encrypt = true`, `dotr check` verifies that
+`recipients_file` exists and contains valid age recipients.
 
-Do not commit the age identity. `dotr doctor` fails if it finds
+Do not commit the age identity. `dotr check` fails if it finds
 `AGE-SECRET-KEY-1` anywhere inside the repository.
+
+Good candidates for encryption are small config files that contain tokens,
+hostnames, internal URLs, account names, or API endpoints. Avoid backing up raw
+private keys such as `~/.ssh/id_rsa` or GnuPG private key material unless you
+have a separate recovery and rotation plan.
+
+If a secret was already committed in plaintext, enabling `encrypt = true` only
+protects future backup files. Rewrite Git history or rotate the exposed secret
+before publishing the repository.
 
 ## Restore Safety
 
@@ -484,6 +563,20 @@ Restore is dry-run by default unless `--apply` is passed.
 
 `dotr` refuses to overwrite differing destination files unless `--force` is
 passed.
+
+Use `-o` / `--output` to write exactly one restored file to another path. This
+is useful for temporarily decrypting a file to inspect it, and it does not
+require `--apply` because it never writes to the original destination:
+
+```sh
+dotr restore -o /tmp/ssh-config ~/.ssh/config
+```
+
+Use `--diff` to compare what file restore would change without writing:
+
+```sh
+dotr restore --diff ~/.ssh/config
+```
 
 Absolute-path restore is intentionally stricter. To restore paths outside
 `$HOME`, both flags are required:

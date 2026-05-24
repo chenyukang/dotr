@@ -9,11 +9,12 @@ use crate::{
     daemon, doctor,
     environment::Environment,
     init,
+    keygen::{self, KeygenOptions},
     manage::{self, AddOptions, RemoveOptions},
     progress::StderrProgress,
     repo,
     restore::{self, RestoreOptions},
-    status, watch,
+    status, terminal, watch,
 };
 
 #[derive(Debug, Parser)]
@@ -74,6 +75,13 @@ enum Commands {
     Add {
         #[arg(value_name = "PATH", help = "File or directory to add")]
         path: PathBuf,
+        #[arg(long, help = "Store the added path encrypted")]
+        encrypt: bool,
+        #[arg(
+            long,
+            help = "Bypass default excludes, binary detection, and size limits"
+        )]
+        force: bool,
         #[arg(long, help = "Skip git commit and push integration")]
         no_git: bool,
         #[arg(long, help = "Commit changes after the backup")]
@@ -105,20 +113,40 @@ enum Commands {
         apply: bool,
         #[arg(long, help = "Overwrite differing destination files or symlinks")]
         force: bool,
-        #[arg(long, help = "Allow restoring paths stored under files/absolute")]
+        #[arg(long, help = "Allow restoring paths stored under files/root")]
         allow_absolute: bool,
+        #[arg(
+            short = 'o',
+            long,
+            value_name = "PATH",
+            help = "Write one matched file to an alternate path without requiring --apply"
+        )]
+        output: Option<PathBuf>,
+        #[arg(long, help = "Show file diffs for planned restores without writing")]
+        diff: bool,
         #[arg(help = "Optional source path scopes to restore, such as ~/.config/nvim")]
         targets: Vec<String>,
     },
     #[command(about = "Watch configured source paths and run debounced backups")]
     Watch,
+    #[command(about = "Generate age key material and write encryption config")]
+    Keygen {
+        #[arg(
+            long,
+            help = "Overwrite existing identity or recipients without prompting"
+        )]
+        force: bool,
+    },
     #[command(about = "Control the cross-platform watch daemon")]
     Daemon {
         #[command(subcommand)]
         command: DaemonCommands,
     },
-    #[command(about = "Check config, repository layout, and secret guardrails")]
-    Doctor,
+    #[command(
+        alias = "doctor",
+        about = "Check config, repository layout, and secret guardrails"
+    )]
+    Check,
     #[command(about = "Print the repository that dotr would use")]
     Repo,
     #[command(about = "Manage user-level dotr configuration")]
@@ -216,6 +244,8 @@ pub fn run_from(cli: Cli) -> Result<()> {
         }
         Commands::Add {
             path,
+            encrypt,
+            force,
             no_git,
             commit,
             push,
@@ -228,6 +258,8 @@ pub fn run_from(cli: Cli) -> Result<()> {
                 &env,
                 &AddOptions {
                     path,
+                    encrypt,
+                    force,
                     no_git,
                     commit,
                     push,
@@ -294,6 +326,8 @@ pub fn run_from(cli: Cli) -> Result<()> {
             apply,
             force,
             allow_absolute,
+            output,
+            diff,
             targets,
         } => {
             let repo_root = repo::resolve_repo(repo.as_deref(), &cwd, &env)?.root;
@@ -305,10 +339,15 @@ pub fn run_from(cli: Cli) -> Result<()> {
                     apply,
                     force,
                     allow_absolute,
+                    output,
+                    diff,
                     targets,
                 },
             )?;
             print_actions(&report.actions);
+            for diff in &report.diffs {
+                println!("{diff}");
+            }
             println!(
                 "restore: {} restored, {} planned, {} skipped",
                 report.restored, report.planned, report.skipped
@@ -317,6 +356,22 @@ pub fn run_from(cli: Cli) -> Result<()> {
         Commands::Watch => {
             let repo_root = repo::resolve_repo(repo.as_deref(), &cwd, &env)?.root;
             watch::run(&repo_root, &env)?;
+        }
+        Commands::Keygen { force } => {
+            let repo_root = repo::resolve_repo(repo.as_deref(), &cwd, &env)?.root;
+            let report = keygen::run(&repo_root, &env, &KeygenOptions { force })?;
+            println!("generated identity {}", report.identity_path.display());
+            println!("generated recipients {}", report.recipients_path.display());
+            if report.config_updated {
+                println!("updated {}", report.config_path.display());
+            } else {
+                println!("{} already configured", report.config_path.display());
+            }
+            if !report.overwritten.is_empty() {
+                for path in report.overwritten {
+                    println!("overwrote {}", path.display());
+                }
+            }
         }
         Commands::Daemon { command } => match command {
             DaemonCommands::Start => {
@@ -373,13 +428,13 @@ pub fn run_from(cli: Cli) -> Result<()> {
                 println!("log_level: {}", status.log_level);
             }
         },
-        Commands::Doctor => {
+        Commands::Check => {
             let repo_root = repo::resolve_repo(repo.as_deref(), &cwd, &env)?.root;
             let report = doctor::run(&repo_root, &env)?;
             for warning in report.warnings {
-                println!("warning: {warning}");
+                println!("{}", terminal::yellow(format!("warning: {warning}")));
             }
-            println!("doctor: ok");
+            println!("check: ok");
         }
         Commands::Repo => {
             let resolution = repo::resolve_repo(repo.as_deref(), &cwd, &env)?;
@@ -401,7 +456,11 @@ pub fn run_from(cli: Cli) -> Result<()> {
 
 fn print_actions(actions: &[String]) {
     for action in actions {
-        println!("{action}");
+        if action.starts_with("warning:") {
+            println!("{}", terminal::yellow(action));
+        } else {
+            println!("{action}");
+        }
     }
 }
 
@@ -440,5 +499,28 @@ fn resolve_daemon_start_repo(
         Ok(resolution) => Ok(Some(resolution.root)),
         Err(_) if daemon::is_configured(env) => Ok(None),
         Err(err) => Err(err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_is_alias_for_check() {
+        let cli = Cli::try_parse_from(["dotr", "doctor"]).unwrap();
+        assert!(matches!(cli.command, Commands::Check));
+    }
+
+    #[test]
+    fn check_is_primary_command() {
+        let cli = Cli::try_parse_from(["dotr", "check"]).unwrap();
+        assert!(matches!(cli.command, Commands::Check));
+    }
+
+    #[test]
+    fn keygen_accepts_force_flag() {
+        let cli = Cli::try_parse_from(["dotr", "keygen", "--force"]).unwrap();
+        assert!(matches!(cli.command, Commands::Keygen { force: true }));
     }
 }

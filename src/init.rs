@@ -54,7 +54,6 @@ pub fn run_with_git(options: &InitOptions, git: &impl GitBackend) -> Result<Init
 
     let store_dir = repo_root.join(DEFAULT_STORE_DIR);
     fs::create_dir_all(store_dir.join("files/home"))?;
-    fs::create_dir_all(store_dir.join("files/absolute"))?;
     fs::create_dir_all(store_dir.join("metadata"))?;
 
     let cfg_path = config_path(&repo_root);
@@ -136,7 +135,7 @@ mod tests {
         assert!(!report.initialized_git);
         assert!(report.repo_root.join("dotr.toml").exists());
         assert!(report.repo_root.join("files/home").is_dir());
-        assert!(report.repo_root.join("files/absolute").is_dir());
+        assert!(!report.repo_root.join("files/root").exists());
         assert!(report.repo_root.join("metadata/index.json").exists());
         assert!(!report.repo_root.join("backup").exists());
 
@@ -173,6 +172,7 @@ mod tests {
         assert!(!toml.contains("exclude = []"));
         assert!(!toml.contains("follow_symlink = true"));
         assert!(!toml.contains("encrypt = false"));
+        assert!(!toml.contains("force = false"));
         assert!(!toml.contains("include_binary_file = false"));
         assert!(toml.contains("[[path_set]]"));
         assert!(!toml.contains("[[path]]"));

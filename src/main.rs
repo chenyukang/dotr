@@ -1,6 +1,6 @@
 fn main() {
     if let Err(err) = dotr::cli::run() {
-        eprintln!("error: {err:#}");
+        eprintln!("{}", dotr::terminal::red(format!("error: {err:#}")));
         std::process::exit(1);
     }
 }

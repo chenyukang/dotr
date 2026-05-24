@@ -60,6 +60,7 @@ pub fn has_managed_changes(repo_root: &Path) -> Result<bool> {
             "dotr.toml",
             "files",
             "metadata",
+            "recipients",
             "recipients.txt",
             ".gitignore",
         ],
@@ -80,6 +81,7 @@ fn add_managed_paths(repo_root: &Path) -> Result<()> {
         "dotr.toml",
         "files",
         "metadata",
+        "recipients",
         "recipients.txt",
         ".gitignore",
     ] {
@@ -93,6 +95,7 @@ fn add_managed_paths(repo_root: &Path) -> Result<()> {
 
 fn is_managed_status_path(path: &str) -> bool {
     path == "dotr.toml"
+        || path == "recipients"
         || path == "recipients.txt"
         || path == ".gitignore"
         || path.starts_with("files/")
@@ -147,6 +150,7 @@ mod tests {
         assert!(is_managed_status_path(".gitignore"));
         assert!(is_managed_status_path("files/home/.config/nvim/init.lua"));
         assert!(is_managed_status_path("metadata/index.json"));
+        assert!(is_managed_status_path("recipients"));
         assert!(is_managed_status_path("recipients.txt"));
 
         assert!(!is_managed_status_path("README.md"));

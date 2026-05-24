@@ -37,6 +37,13 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<DoctorReport> {
     }
 
     if config.has_encrypted_paths() {
+        if config.encryption.backend != "age" {
+            bail!(
+                "unsupported encryption backend: {}",
+                config.encryption.backend
+            );
+        }
+
         let recipients_file = config
             .encryption
             .recipients_file
@@ -49,6 +56,7 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<DoctorReport> {
                 recipients_path.display()
             );
         }
+        let _ = encryption::load_recipients(&recipients_path)?;
     }
 
     if let Some(secret_path) = encryption::find_age_secret(repo_root)? {
@@ -103,5 +111,76 @@ mod tests {
         let err = run(repo.path(), &env).unwrap_err();
 
         assert!(err.to_string().contains("age identity material"));
+    }
+
+    #[test]
+    fn doctor_does_not_require_age_without_encrypted_paths() {
+        let repo = tempdir().unwrap();
+        init::run(&init::InitOptions {
+            target: repo.path().to_path_buf(),
+            with_defaults: false,
+            no_git: true,
+            force: false,
+        })
+        .unwrap();
+
+        let env = Environment::new(tempdir().unwrap().path().to_path_buf()).unwrap();
+        let report = run(repo.path(), &env).unwrap();
+
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn doctor_accepts_encrypted_paths_with_valid_recipients() {
+        let repo = tempdir().unwrap();
+        let identity = age::x25519::Identity::generate();
+        fs::write(
+            repo.path().join("dotr.toml"),
+            r#"
+            [[path]]
+            src = "~/.ssh/config"
+            encrypt = true
+
+            [encryption]
+            backend = "age"
+            recipients_file = "recipients.txt"
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            repo.path().join("recipients.txt"),
+            identity.to_public().to_string(),
+        )
+        .unwrap();
+
+        let env = Environment::new(tempdir().unwrap().path().to_path_buf()).unwrap();
+        let report = run(repo.path(), &env).unwrap();
+
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("source does not exist"));
+    }
+
+    #[test]
+    fn doctor_fails_when_age_recipients_file_is_invalid() {
+        let repo = tempdir().unwrap();
+        fs::write(
+            repo.path().join("dotr.toml"),
+            r#"
+            [[path]]
+            src = "~/.ssh/config"
+            encrypt = true
+
+            [encryption]
+            backend = "age"
+            recipients_file = "recipients.txt"
+            "#,
+        )
+        .unwrap();
+        fs::write(repo.path().join("recipients.txt"), "not-an-age-recipient").unwrap();
+
+        let env = Environment::new(tempdir().unwrap().path().to_path_buf()).unwrap();
+        let err = run(repo.path(), &env).unwrap_err();
+
+        assert!(err.to_string().contains("invalid age recipient"));
     }
 }

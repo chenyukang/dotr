@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use similar::{ChangeTag, TextDiff};
 
 use crate::{
     config::{Config, index_path},
@@ -20,6 +21,8 @@ pub struct RestoreOptions {
     pub apply: bool,
     pub force: bool,
     pub allow_absolute: bool,
+    pub output: Option<PathBuf>,
+    pub diff: bool,
     pub targets: Vec<String>,
 }
 
@@ -29,6 +32,7 @@ pub struct RestoreReport {
     pub planned: usize,
     pub skipped: usize,
     pub actions: Vec<String>,
+    pub diffs: Vec<String>,
 }
 
 pub fn run(repo_root: &Path, env: &Environment, options: &RestoreOptions) -> Result<RestoreReport> {
@@ -42,6 +46,16 @@ pub fn run_with_config(
     config: &Config,
     options: &RestoreOptions,
 ) -> Result<RestoreReport> {
+    if options.dry_run && options.apply {
+        bail!("restore --dry-run and --apply cannot be used together");
+    }
+    if options.diff && options.apply {
+        bail!("restore --diff and --apply cannot be used together");
+    }
+    if options.diff && options.output.is_some() {
+        bail!("restore --diff and --output cannot be used together");
+    }
+
     let store_dir = config.store_dir(repo_root);
     let index = Index::read(&index_path(&store_dir))?;
     let target_filters = options
@@ -49,8 +63,24 @@ pub fn run_with_config(
         .iter()
         .map(|raw| absolute_filter(repo_root, env, raw))
         .collect::<Vec<_>>();
-    let dry_run = options.dry_run || !options.apply;
-    let identities = if !dry_run && index.entries.iter().any(|entry| entry.encrypted) {
+    let entries = index
+        .entries
+        .iter()
+        .filter(|entry| {
+            target_filters.is_empty()
+                || target_filters
+                    .iter()
+                    .any(|filter| entry_matches(env, entry, filter))
+        })
+        .collect::<Vec<_>>();
+    if options.output.is_some() && (entries.len() != 1 || entries[0].kind != EntryKind::File) {
+        bail!("restore --output requires exactly one file target");
+    }
+
+    let dry_run = options.dry_run || (!options.apply && options.output.is_none());
+    let needs_identities =
+        (!dry_run || options.diff) && entries.iter().any(|entry| entry.encrypted);
+    let identities = if needs_identities {
         let identity = config
             .encryption
             .identity
@@ -63,23 +93,30 @@ pub fn run_with_config(
     };
 
     let mut report = RestoreReport::default();
-    for entry in index.entries.iter().filter(|entry| {
-        target_filters.is_empty()
-            || target_filters
-                .iter()
-                .any(|filter| entry_matches(env, entry, filter))
-    }) {
+    for entry in entries {
         ensure_safe_relative(Path::new(&entry.stored))?;
         let absolute_restore = is_stored_absolute(&entry.stored);
-        if !dry_run && absolute_restore && !options.allow_absolute {
+        if !dry_run && options.output.is_none() && absolute_restore && !options.allow_absolute {
             bail!(
                 "refusing to restore absolute path {}; pass --allow-absolute with --apply",
                 entry.source
             );
         }
 
-        let (_, target) = stored_index_to_target(&entry.stored, env)?;
+        let (_, default_target) = stored_index_to_target(&entry.stored, env)?;
+        let target = options.output.as_deref().unwrap_or(&default_target);
         let action = format!("restore {} -> {}", entry.stored, target.display());
+        if options.diff {
+            diff_entry(
+                &store_dir,
+                entry,
+                target,
+                identities.as_deref(),
+                &mut report,
+            )?;
+            continue;
+        }
+
         if dry_run {
             report.planned += 1;
             report.actions.push(format!("would {action}"));
@@ -89,7 +126,7 @@ pub fn run_with_config(
         restore_entry(
             &store_dir,
             entry,
-            &target,
+            target,
             identities.as_deref(),
             options.force,
         )?;
@@ -97,16 +134,99 @@ pub fn run_with_config(
         report.actions.push(action);
     }
 
-    custom_backup::run_restore_commands(
-        config,
-        repo_root,
-        env,
-        dry_run,
-        &options.targets,
-        &mut report.actions,
-    )?;
+    if options.output.is_none() {
+        custom_backup::run_restore_commands(
+            config,
+            repo_root,
+            env,
+            dry_run,
+            &options.targets,
+            &mut report.actions,
+        )?;
+    }
 
     Ok(report)
+}
+
+fn diff_entry(
+    store_dir: &Path,
+    entry: &IndexEntry,
+    target: &Path,
+    identities: Option<&[age::x25519::Identity]>,
+    report: &mut RestoreReport,
+) -> Result<()> {
+    if entry.kind != EntryKind::File {
+        report.skipped += 1;
+        report
+            .actions
+            .push(format!("skip diff non-file {}", entry.source));
+        return Ok(());
+    }
+
+    let incoming = entry_bytes(store_dir, entry, identities)?;
+    let existing = match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.is_file() => fs::read(target)
+            .with_context(|| format!("failed to read existing {}", target.display()))?,
+        Ok(_) => {
+            report.skipped += 1;
+            report
+                .actions
+                .push(format!("skip diff non-file target {}", target.display()));
+            return Ok(());
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", target.display()));
+        }
+    };
+
+    report.planned += 1;
+    if existing == incoming {
+        report.actions.push(format!(
+            "diff {} -> {}: no changes",
+            entry.stored,
+            target.display()
+        ));
+        return Ok(());
+    }
+
+    match render_text_diff(target, &entry.stored, &existing, &incoming) {
+        Some(diff) => report.diffs.push(diff),
+        None => {
+            report.skipped += 1;
+            report.actions.push(format!(
+                "skip diff binary or non-UTF-8 {} -> {}",
+                entry.stored,
+                target.display()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn render_text_diff(
+    target: &Path,
+    stored: &str,
+    existing: &[u8],
+    incoming: &[u8],
+) -> Option<String> {
+    let existing = std::str::from_utf8(existing).ok()?;
+    let incoming = std::str::from_utf8(incoming).ok()?;
+    let diff = TextDiff::from_lines(existing, incoming);
+    let mut rendered = format!("--- {}\n+++ {}\n", target.display(), stored);
+
+    for change in diff.iter_all_changes() {
+        let sign = match change.tag() {
+            ChangeTag::Delete => "-",
+            ChangeTag::Insert => "+",
+            ChangeTag::Equal => " ",
+        };
+        rendered.push_str(sign);
+        rendered.push_str(&change.to_string());
+    }
+
+    Some(rendered)
 }
 
 fn restore_entry(
@@ -137,15 +257,7 @@ fn restore_entry(
             create_symlink(Path::new(symlink_target), target)?;
         }
         EntryKind::File => {
-            let source = store_dir.join(&entry.stored);
-            let bytes = if entry.encrypted {
-                let identities = identities.context("encrypted restore requires age identities")?;
-                let ciphertext = fs::read(&source)
-                    .with_context(|| format!("failed to read {}", source.display()))?;
-                encryption::decrypt_bytes(&ciphertext, identities)?
-            } else {
-                fs::read(&source).with_context(|| format!("failed to read {}", source.display()))?
-            };
+            let bytes = entry_bytes(store_dir, entry, identities)?;
 
             ensure_can_write(target, Some(&bytes), force)?;
             if force {
@@ -161,6 +273,22 @@ fn restore_entry(
     }
 
     Ok(())
+}
+
+fn entry_bytes(
+    store_dir: &Path,
+    entry: &IndexEntry,
+    identities: Option<&[age::x25519::Identity]>,
+) -> Result<Vec<u8>> {
+    let source = store_dir.join(&entry.stored);
+    if entry.encrypted {
+        let identities = identities.context("encrypted restore requires age identities")?;
+        let ciphertext =
+            fs::read(&source).with_context(|| format!("failed to read {}", source.display()))?;
+        encryption::decrypt_bytes(&ciphertext, identities)
+    } else {
+        fs::read(&source).with_context(|| format!("failed to read {}", source.display()))
+    }
 }
 
 fn ensure_can_write(target: &Path, incoming: Option<&[u8]>, force: bool) -> Result<()> {
@@ -306,6 +434,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = prepare_repo(home, &config);
@@ -340,6 +469,29 @@ mod tests {
     }
 
     #[test]
+    fn restore_rejects_dry_run_with_apply() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        let config = Config::default();
+        let repo = prepare_repo(home, &config);
+        let env = Environment::new(home.to_path_buf()).unwrap();
+
+        let err = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &RestoreOptions {
+                dry_run: true,
+                apply: true,
+                ..RestoreOptions::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("--dry-run and --apply"));
+    }
+
+    #[test]
     fn scoped_restore_only_restores_matching_target() {
         let home_dir = tempdir().unwrap();
         let home = home_dir.path();
@@ -355,6 +507,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         config.paths.push(PathConfig {
@@ -363,6 +516,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = prepare_repo(home, &config);
@@ -420,6 +574,7 @@ mod tests {
                 exclude: Vec::new(),
                 follow_symlink: true,
                 include_binary_file: false,
+                force: false,
                 encrypt: false,
             }],
             ..CustomBackupConfig::default()
@@ -482,6 +637,7 @@ mod tests {
                 exclude: Vec::new(),
                 follow_symlink: true,
                 include_binary_file: false,
+                force: false,
                 encrypt: false,
             }],
             ..CustomBackupConfig::default()
@@ -526,6 +682,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = prepare_repo(home_dir.path(), &config);
@@ -594,6 +751,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: true,
             include_binary_file: false,
+            force: false,
             encrypt: true,
         });
         fs::write(
@@ -634,6 +792,302 @@ mod tests {
         );
     }
 
+    #[test]
+    fn output_restores_encrypted_file_without_apply() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join(".config/app")).unwrap();
+        fs::write(home.join(".config/app/token.json"), "secret-token").unwrap();
+
+        let repo = tempdir().unwrap();
+        init::run(&init::InitOptions {
+            target: repo.path().to_path_buf(),
+            with_defaults: false,
+            no_git: true,
+            force: false,
+        })
+        .unwrap();
+        let identity = age::x25519::Identity::generate();
+        fs::write(
+            repo.path().join("recipients"),
+            identity.to_public().to_string(),
+        )
+        .unwrap();
+        let identity_path = repo.path().join("identity");
+        fs::write(&identity_path, identity.to_string().expose_secret()).unwrap();
+
+        let mut config = Config::default();
+        config.encryption.recipients_file = Some("recipients".to_string());
+        config.encryption.identity = Some(identity_path.to_string_lossy().into_owned());
+        config.paths.push(PathConfig {
+            src: "~/.config/app/token.json".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            force: false,
+            encrypt: true,
+        });
+        fs::write(
+            repo.path().join("dotr.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+
+        let env = Environment::new(home.to_path_buf()).unwrap();
+        backup::run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &crate::git::CommandGit,
+        )
+        .unwrap();
+        fs::remove_file(home.join(".config/app/token.json")).unwrap();
+        let output = home.join("preview-token");
+
+        let report = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &RestoreOptions {
+                output: Some(output.clone()),
+                targets: vec!["~/.config/app/token.json".to_string()],
+                ..RestoreOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&output).unwrap(), "secret-token");
+        assert!(!home.join(".config/app/token.json").exists());
+        assert_eq!(report.restored, 1);
+    }
+
+    #[test]
+    fn output_dry_run_does_not_write() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join(".config/app")).unwrap();
+        fs::write(home.join(".config/app/config.toml"), "value").unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: "~/.config/app/config.toml".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            force: false,
+            encrypt: false,
+        });
+        let repo = prepare_repo(home, &config);
+        let env = Environment::new(home.to_path_buf()).unwrap();
+        backup::run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &crate::git::CommandGit,
+        )
+        .unwrap();
+        let output = home.join("preview-config");
+
+        let report = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &RestoreOptions {
+                dry_run: true,
+                output: Some(output.clone()),
+                targets: vec!["~/.config/app/config.toml".to_string()],
+                ..RestoreOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert!(!output.exists());
+        assert_eq!(report.planned, 1);
+    }
+
+    #[test]
+    fn output_requires_exactly_one_file_target() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join(".config/app")).unwrap();
+        fs::write(home.join(".config/app/one.toml"), "one").unwrap();
+        fs::write(home.join(".config/app/two.toml"), "two").unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: "~/.config/app".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            force: false,
+            encrypt: false,
+        });
+        let repo = prepare_repo(home, &config);
+        let env = Environment::new(home.to_path_buf()).unwrap();
+        backup::run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &crate::git::CommandGit,
+        )
+        .unwrap();
+
+        let err = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &RestoreOptions {
+                output: Some(home.join("preview")),
+                targets: vec!["~/.config/app".to_string()],
+                ..RestoreOptions::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("exactly one file target"));
+    }
+
+    #[test]
+    fn diff_reports_planned_file_changes_without_writing() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join(".config/app")).unwrap();
+        fs::write(home.join(".config/app/config.toml"), "new = true\n").unwrap();
+
+        let mut config = Config::default();
+        config.paths.push(PathConfig {
+            src: "~/.config/app/config.toml".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            force: false,
+            encrypt: false,
+        });
+        let repo = prepare_repo(home, &config);
+        let env = Environment::new(home.to_path_buf()).unwrap();
+        backup::run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &crate::git::CommandGit,
+        )
+        .unwrap();
+        fs::write(home.join(".config/app/config.toml"), "new = false\n").unwrap();
+
+        let report = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &RestoreOptions {
+                diff: true,
+                targets: vec!["~/.config/app/config.toml".to_string()],
+                ..RestoreOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(home.join(".config/app/config.toml")).unwrap(),
+            "new = false\n"
+        );
+        assert_eq!(report.planned, 1);
+        let diff = report.diffs.join("\n");
+        assert!(diff.contains("-new = false"));
+        assert!(diff.contains("+new = true"));
+    }
+
+    #[test]
+    fn encrypted_restore_rejects_invalid_identity_file() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        fs::create_dir_all(home.join(".config/app")).unwrap();
+        fs::write(home.join(".config/app/token.json"), "secret-token").unwrap();
+
+        let repo = tempdir().unwrap();
+        init::run(&init::InitOptions {
+            target: repo.path().to_path_buf(),
+            with_defaults: false,
+            no_git: true,
+            force: false,
+        })
+        .unwrap();
+        let identity = age::x25519::Identity::generate();
+        fs::write(
+            repo.path().join("recipients.txt"),
+            identity.to_public().to_string(),
+        )
+        .unwrap();
+        let identity_path = repo.path().join("identity.txt");
+        fs::write(&identity_path, identity.to_string().expose_secret()).unwrap();
+
+        let mut config = Config::default();
+        config.encryption.recipients_file = Some("recipients.txt".to_string());
+        config.encryption.identity = Some(identity_path.to_string_lossy().into_owned());
+        config.paths.push(PathConfig {
+            src: "~/.config/app/token.json".to_string(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            follow_symlink: true,
+            include_binary_file: false,
+            force: false,
+            encrypt: true,
+        });
+        fs::write(
+            repo.path().join("dotr.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+
+        let env = Environment::new(home.to_path_buf()).unwrap();
+        backup::run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &BackupOptions {
+                no_git: true,
+                ..BackupOptions::default()
+            },
+            &crate::git::CommandGit,
+        )
+        .unwrap();
+        fs::remove_file(home.join(".config/app/token.json")).unwrap();
+        fs::write(&identity_path, "not-an-age-identity").unwrap();
+
+        let err = run_with_config(
+            repo.path(),
+            &env,
+            &config,
+            &RestoreOptions {
+                apply: true,
+                targets: vec!["~/.config/app/token.json".to_string()],
+                ..RestoreOptions::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("invalid age identity"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn restores_symlink_itself() {
@@ -649,6 +1103,7 @@ mod tests {
             exclude: Vec::new(),
             follow_symlink: false,
             include_binary_file: false,
+            force: false,
             encrypt: false,
         });
         let repo = prepare_repo(home, &config);

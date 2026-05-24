@@ -4,7 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>dotr - Rust-native config backup</title>
-    <link rel="icon" href="data:," />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <meta name="theme-color" content="#08090d" />
     <meta
       name="description"
       content="dotr is a Rust-native backup tool for personal configuration files, with Git storage, explicit restore, daemon watch mode, and age encryption."
@@ -21,6 +22,7 @@
         <a href="#why">Why</a>
         <a href="#commands">Commands</a>
         <a href="#config">Config</a>
+        <a href="#encryption">Security</a>
         <a
           class="github-link"
           href="https://github.com/chenyukang/dotr"
@@ -133,6 +135,10 @@
           </div>
           <div class="command-line">
             <span class="prompt">$</span>
+            <code>dotr keygen</code>
+          </div>
+          <div class="command-line">
+            <span class="prompt">$</span>
             <code>dotr add ~/.config/nvim</code>
           </div>
           <div class="command-line">
@@ -157,7 +163,7 @@
           </div>
           <div class="command-line">
             <span class="prompt">$</span>
-            <code>dotr doctor</code>
+            <code>dotr check</code>
           </div>
         </div>
       </section>
@@ -180,6 +186,60 @@
 <span class="tok-key">name</span> <span class="tok-op">=</span> <span class="tok-string">"vscode"</span>
 <span class="tok-key">backup</span> <span class="tok-op">=</span> <span class="tok-string">"code --list-extensions &gt; ~/.config/vscode/extensions.txt"</span>
 <span class="tok-key">paths</span> <span class="tok-op">=</span> <span class="tok-punct">[</span><span class="tok-string">"~/.config/vscode/extensions.txt"</span><span class="tok-punct">]</span></code></pre>
+      </section>
+
+      <section id="encryption" class="encryption-section" aria-label="Encryption and safety">
+        <div class="section-heading">
+          <p class="kicker">Security</p>
+          <h2>Generate keys once, then mark risky paths encrypted.</h2>
+          <p>
+            <code>dotr keygen</code> creates the age identity, writes the public
+            recipients file, and updates <code>dotr.toml</code>.
+            <code>dotr add --encrypt</code> adds one selected path and stores it
+            as an encrypted <code>.age</code> file.
+          </p>
+        </div>
+        <pre class="code-panel"><code><span class="sh-prompt">$</span> <span class="sh-bin">cd</span> <span class="sh-path">~/dotbackup</span>
+<span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">keygen</span>
+<span class="sh-prompt">$</span> <span class="sh-bin">dotr</span> <span class="sh-cmd">add</span> <span class="sh-flag">--encrypt</span> <span class="sh-path">~/.ssh/config</span></code></pre>
+        <p class="code-caption security-note">
+          <code>identity</code> is the private key: treat it like a password and
+          keep it out of the backup Git repo. <code>recipients</code> is the
+          public age recipient and is safe to commit.
+        </p>
+        <p class="code-caption">
+          <code>keygen</code> writes the encryption config for you. Encrypted
+          path entries stay explicit and auditable:
+        </p>
+        <pre class="code-panel"><code><span class="tok-section">[[path]]</span>
+<span class="tok-key">src</span> <span class="tok-op">=</span> <span class="tok-string">"~/.ssh/config"</span>
+<span class="tok-key">encrypt</span> <span class="tok-op">=</span> <span class="tok-bool">true</span></code></pre>
+        <div class="signal-grid">
+          <article>
+            <p class="kicker">Commit</p>
+            <h2>Recipients are public.</h2>
+            <p>
+              The <code>recipients</code> file can live in the backup repository
+              because it only contains public age recipients.
+            </p>
+          </article>
+          <article>
+            <p class="kicker">Keep local</p>
+            <h2>Identity is private.</h2>
+            <p>
+              Keep <code>~/.config/dotr/identity</code> out of Git and back it
+              up through a separate trusted channel.
+            </p>
+          </article>
+          <article>
+            <p class="kicker">History</p>
+            <h2>Encryption is not a scrubber.</h2>
+            <p>
+              If a secret was already committed as plaintext, rotate it or
+              rewrite history before publishing the repository.
+            </p>
+          </article>
+        </div>
       </section>
 
       <section id="workflow" class="workflow-section" aria-label="Workflow">

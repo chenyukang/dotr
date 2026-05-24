@@ -313,6 +313,7 @@ pre {
 .signal-band,
 .command-section,
 .config-section,
+.encryption-section,
 .workflow-section {
   padding: 86px 48px;
 }
@@ -356,11 +357,18 @@ h3 {
   line-height: 1.75;
 }
 
+.signal-grid code,
+.section-heading code {
+  color: var(--text);
+  font-weight: 800;
+}
+
 .section-heading {
   margin-bottom: 24px;
 }
 
 .command-section,
+.encryption-section,
 .workflow-section {
   background: #0b0d12;
   border-top: 1px solid var(--line);
@@ -415,6 +423,43 @@ h3 {
   color: var(--amber);
 }
 
+.tok-bool {
+  color: var(--magenta);
+}
+
+.encryption-section .code-panel + .code-panel {
+  margin-top: 14px;
+}
+
+.code-caption {
+  max-width: 1160px;
+  margin: 14px auto 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.code-caption code {
+  color: var(--text);
+}
+
+.security-note {
+  padding: 10px 14px;
+  border: 1px solid rgba(242, 200, 107, 0.4);
+  border-radius: 6px;
+  background: rgba(242, 200, 107, 0.08);
+  color: #f2d997;
+}
+
+.security-note code {
+  color: #ffffff;
+  font-weight: 800;
+}
+
+.encryption-section .signal-grid {
+  margin-top: 18px;
+}
+
 .workflow {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -460,6 +505,7 @@ h3 {
   .signal-band,
   .command-section,
   .config-section,
+  .encryption-section,
   .workflow-section {
     padding: 66px 24px;
   }

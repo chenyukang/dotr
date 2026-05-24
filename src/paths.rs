@@ -7,7 +7,7 @@ use crate::environment::Environment;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoredRoot {
     Home,
-    Absolute,
+    Root,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,7 +22,7 @@ impl StoredPath {
     }
 
     pub fn is_absolute_restore(&self) -> bool {
-        self.root == StoredRoot::Absolute
+        self.root == StoredRoot::Root
     }
 }
 
@@ -45,14 +45,14 @@ pub fn source_to_stored(path: &Path, env: &Environment, encrypted: bool) -> Resu
     let (root, rel_under_root) = if let Ok(rel) = path.strip_prefix(env.home()) {
         (StoredRoot::Home, rel.to_path_buf())
     } else {
-        (StoredRoot::Absolute, absolute_without_root(path)?)
+        (StoredRoot::Root, absolute_without_root(path)?)
     };
 
     ensure_safe_relative(&rel_under_root)?;
 
     let mut relative = match root {
         StoredRoot::Home => PathBuf::from("files").join("home").join(rel_under_root),
-        StoredRoot::Absolute => PathBuf::from("files").join("absolute").join(rel_under_root),
+        StoredRoot::Root => PathBuf::from("files").join("root").join(rel_under_root),
     };
 
     if encrypted {
@@ -75,9 +75,9 @@ pub fn stored_index_to_target(stored: &str, env: &Environment) -> Result<(Stored
             )
         })
         .or_else(|_| {
-            stored_path.strip_prefix("files/absolute").map(|abs_rel| {
+            stored_path.strip_prefix("files/root").map(|abs_rel| {
                 (
-                    StoredRoot::Absolute,
+                    StoredRoot::Root,
                     PathBuf::from("/").join(remove_age_suffix(abs_rel)),
                 )
             })
@@ -103,7 +103,7 @@ pub fn ensure_safe_relative(path: &Path) -> Result<()> {
 }
 
 pub fn is_stored_absolute(stored: &str) -> bool {
-    Path::new(stored).starts_with("files/absolute")
+    Path::new(stored).starts_with("files/root")
 }
 
 fn absolute_without_root(path: &Path) -> Result<PathBuf> {
@@ -168,7 +168,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn maps_absolute_paths_under_files_absolute() {
+    fn maps_absolute_paths_under_files_root() {
         let home = tempdir().unwrap();
         let mapped = source_to_stored(
             Path::new("/Library/example/hello/world"),
@@ -177,10 +177,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(mapped.root, StoredRoot::Absolute);
+        assert_eq!(mapped.root, StoredRoot::Root);
         assert_eq!(
             mapped.as_index_path(),
-            "files/absolute/Library/example/hello/world"
+            "files/root/Library/example/hello/world"
         );
     }
 
@@ -213,7 +213,7 @@ mod tests {
         #[cfg(unix)]
         {
             let (_, target) =
-                stored_index_to_target("files/absolute/Library/example", &env_for(home.path()))
+                stored_index_to_target("files/root/Library/example", &env_for(home.path()))
                     .unwrap();
             assert_eq!(target, PathBuf::from("/Library/example"));
         }

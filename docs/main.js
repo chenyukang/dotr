@@ -52,6 +52,16 @@ function targetPoint(index) {
   return { x: rightX, y: top + index * rowGap };
 }
 
+function repositoryBounds() {
+  const { rightX, top, rowGap, compact } = layout();
+  return {
+    x: rightX - 18,
+    y: top - 42,
+    width: compact ? 190 : 350,
+    height: rowGap * targets.length + 34,
+  };
+}
+
 function seedStreams() {
   streams = sources.map((_, index) => ({
     index,
@@ -88,9 +98,9 @@ function drawColumnTitle(text, x, y, color) {
   ctx.fillText(text, x, y);
 }
 
-function drawPathLabel(text, x, y, muted = false) {
+function drawPathLabel(text, x, y) {
   ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace";
-  ctx.fillStyle = muted ? "rgba(166, 178, 196, 0.32)" : "rgba(237, 244, 255, 0.56)";
+  ctx.fillStyle = "rgba(237, 244, 255, 0.56)";
   ctx.fillText(text, x, y);
 }
 
@@ -130,17 +140,13 @@ function cubic(a, b, c, d, t) {
 }
 
 function drawRepositoryShape() {
-  const { rightX, top, rowGap, compact } = layout();
-  const boxX = rightX - 18;
-  const boxY = top - 34;
-  const boxW = compact ? 190 : 330;
-  const boxH = rowGap * targets.length + 22;
+  const box = repositoryBounds();
 
   ctx.strokeStyle = "rgba(87, 255, 154, 0.28)";
   ctx.fillStyle = "rgba(16, 20, 27, 0.34)";
   ctx.lineWidth = 1;
-  ctx.strokeRect(boxX, boxY, boxW, boxH);
-  ctx.fillRect(boxX, boxY, boxW, boxH);
+  ctx.fillRect(box.x, box.y, box.width, box.height);
+  ctx.strokeRect(box.x, box.y, box.width, box.height);
 }
 
 function drawFileMap() {
@@ -148,22 +154,31 @@ function drawFileMap() {
   const leftLabelX = leftX;
   const rightLabelX = rightX + 16;
 
-  drawColumnTitle("$HOME sources", leftX, top - 28, "#f2c86b");
-  drawColumnTitle("git backup repo", rightX, top - 28, "#57ff9a");
+  if (!compact) {
+    drawColumnTitle("$HOME sources", leftX, top - 28, "#f2c86b");
+  }
   drawRepositoryShape();
+  if (!compact) {
+    const box = repositoryBounds();
+    drawColumnTitle("git backup repo", box.x + 18, box.y + 22, "#57ff9a");
+  }
 
   sources.forEach((source, index) => {
     const from = sourcePoint(index);
     const to = targetPoint(index);
     drawNode(from.x, from.y, "#45d9ff");
     drawNode(to.x, to.y, index === targets.length - 1 ? "#f2c86b" : "#57ff9a");
-    drawPathLabel(source, leftLabelX + 14, from.y + 4, compact);
-    drawPathLabel(targets[index], rightLabelX, to.y + 4, compact);
+    if (!compact) {
+      drawPathLabel(source, leftLabelX + 14, from.y + 4);
+      drawPathLabel(targets[index], rightLabelX, to.y + 4);
+    }
   });
 
-  ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
-  ctx.fillStyle = "rgba(255, 94, 168, 0.48)";
-  ctx.fillText("sha256 + mode + mtime", rightX + 16, top + rowGap * targets.length + 34);
+  if (!compact) {
+    ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+    ctx.fillStyle = "rgba(255, 94, 168, 0.48)";
+    ctx.fillText("sha256 + mode + mtime", rightX + 16, top + rowGap * targets.length + 34);
+  }
 }
 
 function frame(time) {

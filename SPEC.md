@@ -43,14 +43,11 @@ files/
     .config/
       nvim/
         init.lua
-  absolute/
-    Library/
-      example/
-        hello/
-          world
 metadata/
   index.json
 ```
+
+`files/root` is created lazily after the first absolute-path backup.
 
 Path mapping is direct and reversible:
 
@@ -62,12 +59,12 @@ Path mapping is direct and reversible:
 => files/home/.config/nvim/init.lua
 
 /Library/example/hello/world
-=> files/absolute/Library/example/hello/world
+=> files/root/Library/example/hello/world
 ```
 
 `files/home` maps to `$HOME`.
 
-`files/absolute` maps to `/`.
+`files/root` maps to `/`.
 
 `metadata/index.json` stores metadata that cannot be represented reliably
 by copied file contents alone.
@@ -92,9 +89,10 @@ Behavior:
 2. If the target directory is not a Git repository and `--no-git` is not set,
    run `git init`.
 3. Create `dotr.toml` unless it already exists.
-4. Create `files/home`, `files/absolute`, and `metadata`.
+4. Create `files/home` and `metadata`; create `files/root` only when an
+   absolute path is first backed up.
 5. Create an empty `metadata/index.json`.
-6. Create `recipients.txt` when encryption is enabled.
+6. Create `recipients` when encryption is enabled.
 7. Create or update a conservative `.gitignore` for dotr lock files, temp files,
    and logs, without ignoring `files`.
 
@@ -224,6 +222,7 @@ items = [
   ".ssh/config",
   { src = ".config/nvim", include = ["init.lua", "lua/**"] },
   { src = ".config/some-app", include = ["config.toml", "assets/**"], include_binary_file = true },
+  { src = ".local/state/app/activity.log", force = true },
 ]
 
 [[path]]
@@ -251,8 +250,8 @@ commit_message = "chore(dotr): automated backup"
 
 [encryption]
 backend = "age"
-recipients_file = "recipients.txt"
-identity = "~/.config/dotr/age.key"
+recipients_file = "recipients"
+identity = "~/.config/dotr/identity"
 
 [policy]
 max_file_size = "20MiB"
@@ -292,9 +291,14 @@ Binary files are skipped by default. A path can opt in with
 `include_binary_file = true` when binary assets are intentional. Include and
 exclude rules still apply before the binary-file policy, so the recommended
 shape for mixed application directories is a narrow `include` list plus this
-binary opt-in.
+option.
 
-Global default excludes are always applied:
+`force = true` bypasses dotr's default excludes, binary-file detection, and
+`max_file_size` for that configured path. It is intended for explicit files such
+as logs that the user deliberately chose. Explicit path-level `include` and
+`exclude` rules still apply.
+
+Global default excludes are applied unless the path sets `force = true`:
 
 ```text
 **/.git/**
@@ -412,13 +416,27 @@ and VS Code extension lists. It may define `backup`, `restore`, `paths`, and
 
 `dotr add PATH` resolves `PATH` relative to the current directory, writes a new
 `[[path]]` entry to `dotr.toml` if it is not already configured by either
-`[[path]]` or `[[path_set]]`, and then runs one backup pass. Paths under `$HOME`
-are stored in config with `~`.
+`[[path]]` or `[[path_set]]`, and then runs one backup pass. `PATH` may be a
+file or directory. The backup pass is scoped to `PATH` so unrelated configured
+paths are not scanned. Paths under `$HOME` are stored in config with `~`.
+
+`dotr add --encrypt PATH` writes the new path with `encrypt = true`. If
+`[encryption]` is not configured or the recipients file is missing, it must fail
+before changing `dotr.toml` and print a setup hint using `recipients` and
+`~/.config/dotr/identity`.
+
+`dotr add --force PATH` writes the new path with `force = true`, or updates an
+already configured matching `[[path]]` to set `force = true`. The immediate
+backup remains scoped to `PATH`.
+
+If the immediate scoped backup would store no entries, `dotr add` must fail
+without editing `dotr.toml`, print the skip reason, and tell the user to rerun
+with `dotr add --force PATH` when the file is intentional.
 
 `dotr remove PATH` removes the matching configured `[[path]]` entry or
-`[[path_set]]` item from `dotr.toml` and then runs one backup pass with deletion
-enabled, so entries that are no longer covered by config are removed from
-`files/` and `metadata/index.json`.
+`[[path_set]]` item from `dotr.toml` and then runs one backup pass scoped to
+`PATH` with deletion enabled, so entries under the removed path are removed from
+`files/` and `metadata/index.json` without scanning unrelated configured paths.
 
 ## Metadata
 
@@ -511,7 +529,17 @@ Age concepts:
 - `recipient`: public key used to encrypt.
 - `identity`: private key used to decrypt.
 
-The identity file must never be committed. `dotr doctor` must fail if any file
+`dotr keygen` must generate a new age identity at `~/.config/dotr/identity`,
+write the matching public recipient to `recipients` in the dotr repository, and
+write `[encryption]` config with `backend = "age"`,
+`recipients_file = "recipients"`, and
+`identity = "~/.config/dotr/identity"`.
+
+If `~/.config/dotr/identity` or `recipients` already exists, `dotr keygen` must
+ask before overwriting and continue only when the user enters `y`. `--force`
+skips confirmation and overwrites existing key files.
+
+The identity file must never be committed. `dotr check` must fail if any file
 under the repository contains `AGE-SECRET-KEY-1`.
 
 Age encryption is part of v0. Use a Rust age crate or a narrow encryption
@@ -527,6 +555,9 @@ It must not store plaintext hashes for encrypted files.
 Default restore is conservative:
 
 - Dry-run by default unless `--apply` is passed.
+- `-o` / `--output` writes exactly one matched file to an alternate path and
+  does not require `--apply`.
+- `--diff` prints file diffs for planned restores and must not write files.
 - Refuse to overwrite a destination file that differs from the backup unless
   `--force` is passed.
 - Refuse absolute-path restores unless `--allow-absolute` is passed.
@@ -539,6 +570,8 @@ Restore examples:
 ```text
 dotr restore --dry-run
 dotr restore --apply ~/.config/nvim
+dotr restore -o /tmp/ssh-config ~/.ssh/config
+dotr restore --diff ~/.ssh/config
 dotr restore --apply --allow-absolute /Library/example/hello/world
 ```
 
@@ -557,7 +590,7 @@ Absolute path restore follows the stricter path:
 Path traversal protection is mandatory:
 
 - Stored paths must normalize under `files/home` or
-  `files/absolute`.
+  `files/root`.
 - `..` components in stored paths are invalid.
 - Restore must not write outside `$HOME` or `/` mapping roots because of symlink
   traversal.
@@ -662,16 +695,19 @@ dotr add ~/.config/yazi
 dotr remove ~/.config/yazi
 dotr backup [--dry-run] [--no-delete] [--no-git] [--commit] [--push]
 dotr status
-dotr restore [--dry-run] [--apply] [--force] [--allow-absolute] [PATH...]
+dotr restore [--dry-run] [--apply] [--force] [--allow-absolute] [-o PATH] [--diff] [PATH...]
 dotr watch
+dotr keygen [--force]
 dotr daemon start
 dotr daemon stop
 dotr daemon restart
 dotr daemon status
-dotr doctor
+dotr check
 dotr repo
 dotr config set default_repo ~/dotbackup
 ```
+
+`dotr doctor` remains as a compatibility alias for `dotr check`.
 
 `dotr status` reports:
 
@@ -681,7 +717,7 @@ dotr config set default_repo ~/dotbackup
 - Files that would be deleted from backup.
 - Git dirty state for managed backup files.
 
-`dotr doctor` checks:
+`dotr check` checks:
 
 - Config parses.
 - Source paths exist or are allowed to be missing.
@@ -695,15 +731,14 @@ dotr config set default_repo ~/dotbackup
 
 v0 is successful when all of these are true:
 
-1. `dotr init` creates a Git repository, `dotr.toml`,
-   `files/home`, `files/absolute`, and
-   `metadata/index.json`.
+1. `dotr init` creates a Git repository, `dotr.toml`, `files/home`, and
+   `metadata/index.json`; `files/root` is created lazily only when needed.
 2. `dotr init` does not migrate or rewrite any existing dotfiles/chezmoi layout.
 3. A starter config contains common shell, Git, SSH, editor, prompt, terminal,
    Homebrew, and VS Code paths, and does not contain machine-specific personal
    paths.
 4. A config with `/Library/example/hello/world` maps to
-   `files/absolute/Library/example/hello/world`.
+   `files/root/Library/example/hello/world`.
 5. Excluded files are not copied.
 6. Re-running `dotr backup` with no source changes produces no file changes and
    no commit.
@@ -718,7 +753,7 @@ v0 is successful when all of these are true:
 12. `dotr watch` coalesces multiple save events into one backup.
 13. `dotr watch` ignores backup repository changes unless explicitly configured
     to watch the repository.
-14. A backup repository containing `AGE-SECRET-KEY-1` fails `dotr doctor`.
+14. A backup repository containing `AGE-SECRET-KEY-1` fails `dotr check`.
 15. Custom backup commands can generate package/editor inventories before
     backup and can run restore commands after matching files are restored.
 16. Tests cover init, home-relative mapping, absolute mapping, excludes,

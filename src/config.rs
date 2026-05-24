@@ -165,6 +165,8 @@ pub struct PathConfig {
     #[serde(default, skip_serializing_if = "is_false")]
     pub include_binary_file: bool,
     #[serde(default, skip_serializing_if = "is_false")]
+    pub force: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub encrypt: bool,
 }
 
@@ -490,6 +492,7 @@ pub fn path_config(src: &str) -> PathConfig {
         exclude: Vec::new(),
         follow_symlink: true,
         include_binary_file: false,
+        force: false,
         encrypt: false,
     }
 }
@@ -698,6 +701,7 @@ mod tests {
             encrypt = true
             follow_symlink = false
             include_binary_file = true
+            force = true
             include = ["config/**"]
             exclude = ["**/tmp/**"]
 
@@ -726,6 +730,7 @@ mod tests {
         assert!(config.paths[1].encrypt);
         assert!(!config.paths[1].follow_symlink);
         assert!(config.paths[1].include_binary_file);
+        assert!(config.paths[1].force);
         assert_eq!(config.paths[1].include, vec!["config/**"]);
         assert_eq!(config.watch.debounce_secs, 30);
         assert_eq!(
@@ -818,6 +823,7 @@ mod tests {
         let paths = config.path_configs();
         assert!(paths.iter().all(|path| path.follow_symlink));
         assert!(paths.iter().all(|path| !path.include_binary_file));
+        assert!(paths.iter().all(|path| !path.force));
         assert_eq!(
             paths
                 .iter()
