@@ -162,11 +162,15 @@ pub fn run(repo_root: &Path, env: &Environment) -> Result<()> {
                 structured_log::error(
                     "backup_failed",
                     &[
-                        ("error", json!(err.to_string())),
+                        ("error", json!(format!("{err:#}"))),
                         ("cost", json!(format!("{} ms", backup_cost.as_millis()))),
+                        ("continuing", json!(true)),
                     ],
                 );
-                return Err(err);
+                suppressed_events =
+                    suppress_custom_backup_events(&event_rules, Instant::now(), debounce);
+                last_backup_finished = Some(Instant::now());
+                continue;
             }
         };
         for action in &report.actions {
