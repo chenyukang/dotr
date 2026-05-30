@@ -297,6 +297,46 @@ option.
 as logs that the user deliberately chose. Explicit path-level `include` and
 `exclude` rules still apply.
 
+## Normalize compare policy
+
+Each configured `[[path]]` or `path_set` table item may define `normalize`
+rules for files that contain durable config mixed with volatile fields:
+
+```toml
+[[path]]
+src = "~/.config/some-app"
+include = ["config.toml", "profiles/*.json"]
+normalize = [
+  { match = "config.toml", drop_paths = ["runtime.last_updated"] },
+  { match = "profiles/*.json", drop_paths = ["sessions.*.last_seen"] },
+]
+```
+
+The compact single-rule form is also valid TOML:
+
+```toml
+normalize = { match = "config.toml", drop_paths = ["runtime.last_updated"] }
+```
+
+Behavior:
+
+1. `normalize` is compare-only. It never rewrites stored backup files and never
+   removes fields during restore.
+2. `match` is relative to the configured `src`. It accepts exact relative paths
+   and glob patterns. If omitted, the rule matches the configured source itself.
+3. Rules are evaluated in order and the first matching rule is used.
+4. `format` may be omitted when the matched file extension is recognized.
+   Supported inferred formats are `.toml`, `.json`, `.txt`, and `.conf`.
+5. `drop_paths` is supported for TOML and JSON. Paths are dot-separated keys,
+   and `*` matches one table/object level, such as
+   `marketplaces.*.last_updated`.
+6. When a normalized comparison is unchanged, `dotr backup` must preserve the
+   previous stored file and previous metadata instead of writing a new
+   `metadata/index.json` entry just to record a normalized hash.
+7. Encrypted paths must reject `normalize`, because encrypted comparison is
+   based on ciphertext and should not parse plaintext during the backup compare
+   step.
+
 Global default excludes are applied unless the path sets `force = true`:
 
 ```text
@@ -385,7 +425,8 @@ Algorithm:
 6. Apply per-path includes.
 7. Skip binary files unless the path sets `include_binary_file = true`.
 8. Reject paths that cannot be mapped safely into `files`.
-9. Compare source files with current backup files.
+9. Compare source files with current backup files, using path-level
+   `normalize` rules when present.
 10. Copy changed or new files into `files`.
 11. Remove backed-up files whose source files disappeared, unless
    `--no-delete` is set.

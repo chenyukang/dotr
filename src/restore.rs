@@ -436,6 +436,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = prepare_repo(home, &config);
         let env = Environment::new(home.to_path_buf()).unwrap();
@@ -509,6 +510,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         config.paths.push(PathConfig {
             src: "~/.config/fish".to_string(),
@@ -518,6 +520,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = prepare_repo(home, &config);
         let env = Environment::new(home.to_path_buf()).unwrap();
@@ -576,6 +579,7 @@ mod tests {
                 include_binary_file: false,
                 force: false,
                 encrypt: false,
+                normalize: Vec::new(),
             }],
             ..CustomBackupConfig::default()
         });
@@ -639,6 +643,7 @@ mod tests {
                 include_binary_file: false,
                 force: false,
                 encrypt: false,
+                normalize: Vec::new(),
             }],
             ..CustomBackupConfig::default()
         });
@@ -684,6 +689,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = prepare_repo(home_dir.path(), &config);
         let env = Environment::new(home_dir.path().to_path_buf()).unwrap();
@@ -753,6 +759,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: true,
+            normalize: Vec::new(),
         });
         fs::write(
             repo.path().join("dotr.toml"),
@@ -827,6 +834,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: true,
+            normalize: Vec::new(),
         });
         fs::write(
             repo.path().join("dotr.toml"),
@@ -882,6 +890,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = prepare_repo(home, &config);
         let env = Environment::new(home.to_path_buf()).unwrap();
@@ -932,6 +941,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = prepare_repo(home, &config);
         let env = Environment::new(home.to_path_buf()).unwrap();
@@ -978,6 +988,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = prepare_repo(home, &config);
         let env = Environment::new(home.to_path_buf()).unwrap();
@@ -1051,6 +1062,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: true,
+            normalize: Vec::new(),
         });
         fs::write(
             repo.path().join("dotr.toml"),
@@ -1105,6 +1117,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = prepare_repo(home, &config);
         let env = Environment::new(home.to_path_buf()).unwrap();

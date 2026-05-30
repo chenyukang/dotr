@@ -207,6 +207,7 @@ fn ensure_path_config(
         include_binary_file: false,
         force,
         encrypt,
+        normalize: Vec::new(),
     });
     true
 }

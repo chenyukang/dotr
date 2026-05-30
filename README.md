@@ -140,6 +140,41 @@ items = [
 ]
 ```
 
+Some config files contain durable settings mixed with volatile generated fields
+such as timestamps, counters, or last-refresh markers. Use `normalize` to
+compare a matched file after dropping those fields:
+
+```toml
+[[path]]
+src = "~/.config/some-app"
+include = ["config.toml"]
+normalize = { match = "config.toml", drop_paths = ["runtime.last_updated"] }
+```
+
+`normalize` is compare-only: it does not rewrite the file stored under `files/`
+or remove fields during restore. If only dropped values change, `dotr backup`
+leaves the previous backup file and metadata untouched. If a meaningful value
+changes later, dotr copies the current raw file as usual.
+
+`match` is relative to the configured `src` and accepts glob patterns. If
+`format` is omitted, dotr infers it from the matched file extension: `.toml`,
+`.json`, `.txt`, and `.conf` are recognized. `drop_paths` is supported for TOML
+and JSON; paths use dot-separated keys and `*` matches one object/table level,
+for example `marketplaces.*.last_updated`. For multiple files, use an array:
+
+```toml
+[[path]]
+src = "~/.config/some-app"
+include = ["config.toml", "profiles/*.json"]
+normalize = [
+  { match = "config.toml", drop_paths = ["runtime.last_updated"] },
+  { match = "profiles/*.json", drop_paths = ["sessions.*.last_seen"] },
+]
+```
+
+It cannot be combined with `encrypt = true`, because encrypted backup comparison operates on
+ciphertext and should not parse plaintext during the backup compare step.
+
 Binary files are skipped by default. If a configured path intentionally needs
 binary assets, set `include_binary_file = true`. Use `force = true` only for
 explicit files or directories that must bypass default excludes, binary

@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 pub const DEFAULT_STORE_DIR: &str = ".";
 pub const CONFIG_FILE_NAME: &str = "dotr.toml";
@@ -168,6 +168,31 @@ pub struct PathConfig {
     pub force: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub encrypt: bool,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_normalize_rules",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub normalize: Vec<NormalizeRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NormalizeRule {
+    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+    pub match_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<NormalizeFormat>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drop_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NormalizeFormat {
+    Toml,
+    Json,
+    Text,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -494,6 +519,7 @@ pub fn path_config(src: &str) -> PathConfig {
         include_binary_file: false,
         force: false,
         encrypt: false,
+        normalize: Vec::new(),
     }
 }
 
@@ -653,6 +679,25 @@ fn is_default_daemon_config(value: &DaemonConfig) -> bool {
     value == &DaemonConfig::default()
 }
 
+fn deserialize_normalize_rules<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<NormalizeRule>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(NormalizeRule),
+        Many(Vec<NormalizeRule>),
+    }
+
+    Ok(match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(rule) => vec![rule],
+        OneOrMany::Many(rules) => rules,
+    })
+}
+
 fn default_true() -> bool {
     true
 }
@@ -739,6 +784,48 @@ mod tests {
             Some("~/logs/dotr-watch.log")
         );
         assert_eq!(config.daemon.log_level.as_deref(), Some("debug"));
+    }
+
+    #[test]
+    fn path_normalize_accepts_inline_table() {
+        let config: Config = toml::from_str(
+            r#"
+            [[path]]
+            src = "~/.codex"
+            include = ["config.toml"]
+            normalize = { match = "config.toml", drop_paths = ["marketplaces.*.last_updated"] }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.paths[0].normalize.len(), 1);
+        let rule = &config.paths[0].normalize[0];
+        assert_eq!(rule.match_path.as_deref(), Some("config.toml"));
+        assert_eq!(rule.format, None);
+        assert_eq!(rule.drop_paths, vec!["marketplaces.*.last_updated"]);
+    }
+
+    #[test]
+    fn path_set_item_normalize_expands_with_base() {
+        let config: Config = toml::from_str(
+            r#"
+            [[path_set]]
+            base = "~"
+            items = [
+              { src = ".codex", include = ["config.toml"], normalize = { match = "config.toml", drop_paths = ["marketplaces.*.last_updated"] } },
+            ]
+            "#,
+        )
+        .unwrap();
+
+        let paths = config.path_configs();
+        assert_eq!(paths[0].src, "~/.codex");
+        assert_eq!(paths[0].include, vec!["config.toml"]);
+        assert_eq!(paths[0].normalize.len(), 1);
+        assert_eq!(
+            paths[0].normalize[0].drop_paths,
+            vec!["marketplaces.*.last_updated"]
+        );
     }
 
     #[test]

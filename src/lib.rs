@@ -12,6 +12,7 @@ pub mod index;
 pub mod init;
 pub mod keygen;
 pub mod manage;
+pub mod normalize;
 pub mod paths;
 pub mod progress;
 pub mod repo;

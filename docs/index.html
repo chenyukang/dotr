@@ -180,12 +180,39 @@
   <span class="tok-string">".gitconfig"</span><span class="tok-punct">,</span>
   <span class="tok-punct">{</span> <span class="tok-key">src</span> <span class="tok-op">=</span> <span class="tok-string">".config/nvim"</span><span class="tok-punct">,</span> <span class="tok-key">include</span> <span class="tok-op">=</span> <span class="tok-punct">[</span><span class="tok-string">"init.lua"</span><span class="tok-punct">,</span> <span class="tok-string">"lua/**"</span><span class="tok-punct">]</span> <span class="tok-punct">}</span><span class="tok-punct">,</span>
   <span class="tok-punct">{</span> <span class="tok-key">src</span> <span class="tok-op">=</span> <span class="tok-string">".hermes"</span><span class="tok-punct">,</span> <span class="tok-key">include</span> <span class="tok-op">=</span> <span class="tok-punct">[</span><span class="tok-string">"config.yaml"</span><span class="tok-punct">,</span> <span class="tok-string">"skills/**"</span><span class="tok-punct">]</span> <span class="tok-punct">}</span><span class="tok-punct">,</span>
+  <span class="tok-punct">{</span> <span class="tok-key">src</span> <span class="tok-op">=</span> <span class="tok-string">".config/agent"</span><span class="tok-punct">,</span> <span class="tok-key">include</span> <span class="tok-op">=</span> <span class="tok-punct">[</span><span class="tok-string">"config.toml"</span><span class="tok-punct">]</span><span class="tok-punct">,</span> <span class="tok-key">normalize</span> <span class="tok-op">=</span> <span class="tok-punct">{</span> <span class="tok-key">match</span> <span class="tok-op">=</span> <span class="tok-string">"config.toml"</span><span class="tok-punct">,</span> <span class="tok-key">drop_paths</span> <span class="tok-op">=</span> <span class="tok-punct">[</span><span class="tok-string">"runtime.last_updated"</span><span class="tok-punct">]</span> <span class="tok-punct">}</span> <span class="tok-punct">}</span><span class="tok-punct">,</span>
 <span class="tok-punct">]</span>
 
 <span class="tok-section">[[custom_backup]]</span>
 <span class="tok-key">name</span> <span class="tok-op">=</span> <span class="tok-string">"vscode"</span>
 <span class="tok-key">backup</span> <span class="tok-op">=</span> <span class="tok-string">"code --list-extensions &gt; ~/.config/vscode/extensions.txt"</span>
 <span class="tok-key">paths</span> <span class="tok-op">=</span> <span class="tok-punct">[</span><span class="tok-string">"~/.config/vscode/extensions.txt"</span><span class="tok-punct">]</span></code></pre>
+        <div class="signal-grid">
+          <article>
+            <p class="kicker">Normalize</p>
+            <h2>Drop noisy keys during compare.</h2>
+            <p>
+              <code>normalize</code> can ignore timestamp-like TOML or JSON
+              fields, while the backup still stores the original file.
+            </p>
+          </article>
+          <article>
+            <p class="kicker">Scope</p>
+            <h2>Rules stay path-local.</h2>
+            <p>
+              <code>match</code> is relative to the configured source path and
+              accepts exact paths or globs.
+            </p>
+          </article>
+          <article>
+            <p class="kicker">Restore</p>
+            <h2>Nothing is stripped on disk.</h2>
+            <p>
+              Normalization only decides whether a backup changed; restore uses
+              the raw stored file.
+            </p>
+          </article>
+        </div>
       </section>
 
       <section id="encryption" class="encryption-section" aria-label="Encryption and safety">

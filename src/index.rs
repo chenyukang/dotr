@@ -30,6 +30,8 @@ pub struct IndexEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalized_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<u32>,
     #[serde(default)]
     pub executable: bool,
@@ -105,6 +107,7 @@ mod tests {
                 stored: "files/home/.config/nvim/init.lua".to_string(),
                 kind: EntryKind::File,
                 sha256: Some("abc".to_string()),
+                normalized_sha256: None,
                 mode: Some(0o644),
                 executable: false,
                 encrypted: false,

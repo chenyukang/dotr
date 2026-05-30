@@ -6,7 +6,7 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use globset::GlobSet;
 use walkdir::WalkDir;
 
@@ -17,6 +17,7 @@ use crate::{
     git::{CommandGit, GitBackend},
     hash::{sha256_bytes, sha256_file},
     index::{EntryKind, Index, IndexEntry},
+    normalize,
     paths::{absolutize, ensure_safe_relative, source_to_stored},
     progress::{BackupProgress, NoopProgress},
 };
@@ -377,11 +378,13 @@ fn process_path_candidate(
                 previous,
                 current,
                 report,
+                source_root,
                 entry.path(),
                 path_config.encrypt,
                 path_config.follow_symlink,
                 path_config.include_binary_file,
                 path_config.force,
+                &path_config.normalize,
                 max_file_size,
                 recipients,
                 dry_run,
@@ -418,11 +421,13 @@ fn process_path_candidate(
             previous,
             current,
             report,
+            source_root,
             candidate,
             path_config.encrypt,
             path_config.follow_symlink,
             path_config.include_binary_file,
             path_config.force,
+            &path_config.normalize,
             max_file_size,
             recipients,
             dry_run,
@@ -461,11 +466,13 @@ fn process_entry(
     previous: &Index,
     current: &mut BTreeMap<String, IndexEntry>,
     report: &mut BackupReport,
+    source_root: &Path,
     source: &Path,
     encrypted: bool,
     follow_symlink: bool,
     include_binary_file: bool,
     force: bool,
+    normalize_rules: &[crate::config::NormalizeRule],
     max_file_size: u64,
     recipients: Option<&[age::x25519::Recipient]>,
     dry_run: bool,
@@ -502,6 +509,7 @@ fn process_entry(
         stored: stored_key.clone(),
         kind: kind_for_metadata(&metadata),
         sha256: None,
+        normalized_sha256: None,
         mode,
         executable: mode.is_some_and(|mode| mode & 0o111 != 0),
         encrypted: encrypted && file_type.is_file(),
@@ -541,8 +549,16 @@ fn process_entry(
 
     index_entry.size = Some(metadata.len());
     index_entry.modified_unix_nanos = modified_unix_nanos(&metadata);
+    index_entry.normalized_sha256 =
+        normalize::normalized_sha256_for_file(source_root, source, normalize_rules)?;
 
     if encrypted {
+        if index_entry.normalized_sha256.is_some() {
+            bail!(
+                "normalize is not supported for encrypted path {}",
+                source.display()
+            );
+        }
         let unchanged = previous_entry.is_some_and(|prev| {
             prev.kind == index_entry.kind
                 && prev.encrypted
@@ -581,10 +597,20 @@ fn process_entry(
 
     index_entry.sha256 =
         Some(sha256_file(source).with_context(|| format!("failed to hash {}", source.display()))?);
-    let unchanged = previous_entry.is_some_and(|prev| {
-        file_entry_unchanged_ignoring_mtime(prev, &index_entry)
-            && store_dir.join(&stored.relative).exists()
-    });
+    let stored_exists = store_dir.join(&stored.relative).exists();
+    let unchanged = if let Some(prev) = previous_entry {
+        stored_exists
+            && file_entry_unchanged_for_backup(
+                store_dir,
+                source_root,
+                source,
+                normalize_rules,
+                prev,
+                &index_entry,
+            )?
+    } else {
+        false
+    };
 
     if unchanged {
         report.unchanged += 1;
@@ -800,6 +826,21 @@ fn warn_if_previously_plaintext(
     ));
 }
 
+fn file_entry_unchanged_for_backup(
+    store_dir: &Path,
+    source_root: &Path,
+    source: &Path,
+    normalize_rules: &[crate::config::NormalizeRule],
+    prev: &IndexEntry,
+    next: &IndexEntry,
+) -> Result<bool> {
+    if next.normalized_sha256.is_some() {
+        normalized_file_entry_unchanged(store_dir, source_root, source, normalize_rules, prev, next)
+    } else {
+        Ok(file_entry_unchanged_ignoring_mtime(prev, next))
+    }
+}
+
 fn file_entry_unchanged_ignoring_mtime(prev: &IndexEntry, next: &IndexEntry) -> bool {
     prev.source == next.source
         && prev.stored == next.stored
@@ -810,6 +851,50 @@ fn file_entry_unchanged_ignoring_mtime(prev: &IndexEntry, next: &IndexEntry) -> 
         && prev.encrypted == next.encrypted
         && prev.symlink_target == next.symlink_target
         && prev.size == next.size
+}
+
+fn normalized_file_entry_unchanged(
+    store_dir: &Path,
+    source_root: &Path,
+    source: &Path,
+    normalize_rules: &[crate::config::NormalizeRule],
+    prev: &IndexEntry,
+    next: &IndexEntry,
+) -> Result<bool> {
+    if !(prev.source == next.source
+        && prev.stored == next.stored
+        && prev.kind == next.kind
+        && prev.mode == next.mode
+        && prev.executable == next.executable
+        && prev.encrypted == next.encrypted
+        && prev.symlink_target == next.symlink_target)
+    {
+        return Ok(false);
+    }
+
+    if prev.normalized_sha256 == next.normalized_sha256 {
+        return Ok(true);
+    }
+
+    if prev.sha256 == next.sha256 {
+        return Ok(true);
+    }
+
+    let Some(next_normalized_sha256) = next.normalized_sha256.as_deref() else {
+        return Ok(false);
+    };
+    let previous_content = store_dir.join(&prev.stored);
+    let Some(previous_normalized_sha256) = normalize::normalized_sha256_for_file_contents(
+        source_root,
+        source,
+        &previous_content,
+        normalize_rules,
+    )?
+    else {
+        return Ok(false);
+    };
+
+    Ok(previous_normalized_sha256 == next_normalized_sha256)
 }
 
 fn kind_for_metadata(metadata: &fs::Metadata) -> EntryKind {
@@ -915,7 +1000,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::{CustomBackupConfig, PathConfig},
+        config::{CustomBackupConfig, NormalizeRule, PathConfig, path_config},
         init,
     };
 
@@ -1011,6 +1096,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1066,6 +1152,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1108,6 +1195,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         config.paths.push(PathConfig {
             src: "~/.config/other".to_string(),
@@ -1117,6 +1205,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1194,6 +1283,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         config.paths.push(PathConfig {
             src: "~/.config/other".to_string(),
@@ -1203,6 +1293,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1283,6 +1374,7 @@ mod tests {
                 include_binary_file: false,
                 force: false,
                 encrypt: false,
+                normalize: Vec::new(),
             }],
             ..CustomBackupConfig::default()
         });
@@ -1298,6 +1390,7 @@ mod tests {
                 include_binary_file: false,
                 force: false,
                 encrypt: false,
+                normalize: Vec::new(),
             }],
             ..CustomBackupConfig::default()
         });
@@ -1359,6 +1452,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1382,12 +1476,200 @@ mod tests {
     }
 
     #[test]
+    fn normalized_toml_drop_paths_suppresses_ignored_updates() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        let codex = home.join(".codex");
+        let source = codex.join("config.toml");
+        fs::create_dir_all(&codex).unwrap();
+        fs::write(
+            &source,
+            r#"
+            [marketplaces.openai-bundled]
+            last_updated = "2026-05-29T00:00:00Z"
+            source_type = "local"
+            "#,
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        let mut path = path_config("~/.codex");
+        path.include = vec!["config.toml".to_string()];
+        path.normalize = vec![NormalizeRule {
+            match_path: Some("config.toml".to_string()),
+            format: None,
+            drop_paths: vec!["marketplaces.*.last_updated".to_string()],
+        }];
+        config.paths.push(path);
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+        let options = BackupOptions {
+            no_git: true,
+            ..BackupOptions::default()
+        };
+
+        let first = run_with_config(repo.path(), &env, &config, &options, &CommandGit).unwrap();
+        assert_eq!(first.added, 1);
+        let stored = repo.path().join("files/home/.codex/config.toml");
+        let stored_before = fs::read_to_string(&stored).unwrap();
+        assert!(stored_before.contains("2026-05-29T00:00:00Z"));
+        let index_before = fs::read_to_string(repo.path().join("metadata/index.json")).unwrap();
+
+        fs::write(
+            &source,
+            r#"
+            [marketplaces.openai-bundled]
+            last_updated = "2026-05-30T00:00:00Z"
+            source_type = "local"
+            "#,
+        )
+        .unwrap();
+
+        let second = run_with_config(repo.path(), &env, &config, &options, &CommandGit).unwrap();
+        assert_eq!(second.added + second.updated + second.deleted, 0);
+        assert_eq!(fs::read_to_string(&stored).unwrap(), stored_before);
+        assert_eq!(
+            fs::read_to_string(repo.path().join("metadata/index.json")).unwrap(),
+            index_before
+        );
+    }
+
+    #[test]
+    fn enabling_normalize_does_not_update_existing_plaintext_entry() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        let codex = home.join(".codex");
+        let source = codex.join("config.toml");
+        fs::create_dir_all(&codex).unwrap();
+        fs::write(
+            &source,
+            r#"
+            [marketplaces.openai-bundled]
+            last_updated = "2026-05-29T00:00:00Z"
+            source_type = "local"
+            "#,
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        let mut path = path_config("~/.codex");
+        path.include = vec!["config.toml".to_string()];
+        config.paths.push(path);
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+        let options = BackupOptions {
+            no_git: true,
+            ..BackupOptions::default()
+        };
+
+        let first = run_with_config(repo.path(), &env, &config, &options, &CommandGit).unwrap();
+        assert_eq!(first.added, 1);
+        let stored = repo.path().join("files/home/.codex/config.toml");
+        let stored_before = fs::read_to_string(&stored).unwrap();
+        let index_before = fs::read_to_string(repo.path().join("metadata/index.json")).unwrap();
+
+        config.paths[0].normalize = vec![NormalizeRule {
+            match_path: Some("config.toml".to_string()),
+            format: None,
+            drop_paths: vec!["marketplaces.*.last_updated".to_string()],
+        }];
+
+        let second = run_with_config(repo.path(), &env, &config, &options, &CommandGit).unwrap();
+        assert_eq!(second.added + second.updated + second.deleted, 0);
+        assert_eq!(fs::read_to_string(&stored).unwrap(), stored_before);
+        assert_eq!(
+            fs::read_to_string(repo.path().join("metadata/index.json")).unwrap(),
+            index_before
+        );
+
+        fs::write(
+            &source,
+            r#"
+            [marketplaces.openai-bundled]
+            last_updated = "2026-05-30T00:00:00Z"
+            source_type = "local"
+            "#,
+        )
+        .unwrap();
+
+        let third = run_with_config(repo.path(), &env, &config, &options, &CommandGit).unwrap();
+        assert_eq!(third.added + third.updated + third.deleted, 0);
+        assert_eq!(fs::read_to_string(&stored).unwrap(), stored_before);
+        assert_eq!(
+            fs::read_to_string(repo.path().join("metadata/index.json")).unwrap(),
+            index_before
+        );
+    }
+
+    #[test]
+    fn normalized_toml_still_updates_on_semantic_changes() {
+        let home_dir = tempdir().unwrap();
+        let home = home_dir.path();
+        let codex = home.join(".codex");
+        let source = codex.join("config.toml");
+        fs::create_dir_all(&codex).unwrap();
+        fs::write(
+            &source,
+            r#"
+            [marketplaces.openai-bundled]
+            last_updated = "2026-05-29T00:00:00Z"
+            source_type = "local"
+            "#,
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        let mut path = path_config("~/.codex");
+        path.include = vec!["config.toml".to_string()];
+        path.normalize = vec![NormalizeRule {
+            match_path: Some("config.toml".to_string()),
+            format: None,
+            drop_paths: vec!["marketplaces.*.last_updated".to_string()],
+        }];
+        config.paths.push(path);
+        let repo = repo_with_config(home, &config);
+        let env = env_for(home);
+        let options = BackupOptions {
+            no_git: true,
+            ..BackupOptions::default()
+        };
+
+        run_with_config(repo.path(), &env, &config, &options, &CommandGit).unwrap();
+        fs::write(
+            &source,
+            r#"
+            [marketplaces.openai-bundled]
+            last_updated = "2026-05-30T00:00:00Z"
+            source_type = "remote"
+            "#,
+        )
+        .unwrap();
+
+        let second = run_with_config(repo.path(), &env, &config, &options, &CommandGit).unwrap();
+        assert_eq!(second.updated, 1);
+        let stored = fs::read_to_string(repo.path().join("files/home/.codex/config.toml")).unwrap();
+        assert!(stored.contains("source_type = \"remote\""));
+        assert!(stored.contains("2026-05-30T00:00:00Z"));
+
+        let index = Index::read(&repo.path().join("metadata/index.json")).unwrap();
+        let entry = index
+            .entries
+            .iter()
+            .find(|entry| entry.source == "~/.codex/config.toml")
+            .unwrap();
+        assert!(entry.sha256.is_some());
+        assert!(entry.normalized_sha256.is_some());
+        assert_ne!(entry.sha256, entry.normalized_sha256);
+    }
+
+    #[test]
     fn plaintext_file_comparison_ignores_mtime_only() {
         let previous = IndexEntry {
             source: "~/.config/app/config.toml".to_string(),
             stored: "files/home/.config/app/config.toml".to_string(),
             kind: EntryKind::File,
             sha256: Some("abc".to_string()),
+            normalized_sha256: None,
             mode: Some(0o644),
             executable: false,
             encrypted: false,
@@ -1448,6 +1730,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1519,6 +1802,7 @@ mod tests {
                 include_binary_file: false,
                 force: false,
                 encrypt: false,
+                normalize: Vec::new(),
             }],
             ..CustomBackupConfig::default()
         });
@@ -1568,6 +1852,7 @@ mod tests {
                 include_binary_file: false,
                 force: false,
                 encrypt: false,
+                normalize: Vec::new(),
             }],
             ..CustomBackupConfig::default()
         });
@@ -1613,6 +1898,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1654,6 +1940,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1707,6 +1994,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1753,6 +2041,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1796,6 +2085,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1843,6 +2133,7 @@ mod tests {
             include_binary_file: false,
             force: true,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1887,6 +2178,7 @@ mod tests {
             include_binary_file: true,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -1926,6 +2218,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         fs::create_dir_all(repo.path().join("files/home/.codex/cache")).unwrap();
@@ -1983,6 +2276,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -2029,6 +2323,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: true,
+            normalize: Vec::new(),
         });
         fs::write(
             repo.path().join("dotr.toml"),
@@ -2090,6 +2385,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -2144,6 +2440,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -2191,6 +2488,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
@@ -2235,6 +2533,7 @@ mod tests {
             include_binary_file: false,
             force: false,
             encrypt: false,
+            normalize: Vec::new(),
         });
         let repo = repo_with_config(home, &config);
         let env = env_for(home);
